@@ -17,6 +17,8 @@ import fi.dy.masa.minihud.renderer.OverlayRendererVillagerInfo;
 import fi.dy.masa.minihud.renderer.worker.WorkerDaemonHandler;
 import fi.dy.masa.minihud.util.DataStorage;
 
+// test
+
 public class InitHandler implements IInitializationHandler
 {
     @Override
