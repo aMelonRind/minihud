@@ -1,7 +1,15 @@
 package fi.dy.masa.minihud.renderer;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.function.BiFunction;
+import java.util.function.BiPredicate;
+import java.util.function.Predicate;
+
+import com.google.common.base.Predicates;
+import fi.dy.masa.minihud.renderer.shapes.ShapeManager;
+import fi.dy.masa.minihud.renderer.shapes.ShapeSpawnSphere;
 import org.joml.Matrix4f;
 
 import com.mojang.blaze3d.vertex.BufferBuilder;
@@ -47,6 +55,8 @@ import fi.dy.masa.minihud.util.LightLevelMarkerMode;
 import fi.dy.masa.minihud.util.LightLevelNumberMode;
 import fi.dy.masa.minihud.util.LightLevelRenderCondition;
 
+import javax.annotation.Nullable;
+
 public class OverlayRendererLightLevel extends OverlayRendererBase
 {
     public static final OverlayRendererLightLevel INSTANCE = new OverlayRendererLightLevel();
@@ -55,10 +65,15 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
     private final List<LightLevelInfo> lightInfos;
     private BlockPos.MutableBlockPos mutablePos;
     private Direction lastDirection;
+    @Nullable private List<ShapeSpawnSphere> lastInShapes;
+    @Nullable private List<ShapeSpawnSphere> lastOutShapes;
 
     private boolean tagsBroken;
     private boolean needsUpdate;
     private boolean hasData;
+
+    // if implemented as method param, it'll break tweakermore.
+    private boolean underWater;
 
     protected OverlayRendererLightLevel()
     {
@@ -66,6 +81,8 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         this.mutablePos = new BlockPos.MutableBlockPos();
         this.lastDirection = Direction.NORTH;
         this.hasData = false;
+        this.lastInShapes = null;
+        this.lastOutShapes = null;
     }
 
     @Override
@@ -81,6 +98,17 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         this.clearBuffers();
     }
 
+    public void onSpawnSphereUpdate()
+    {
+        boolean hasShapeInteraction = Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_FULL.getBooleanValue() ||
+                Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_LIMIT.getBooleanValue();
+
+        if (hasShapeInteraction)
+        {
+            OverlayRendererLightLevel.INSTANCE.setNeedsUpdate();
+        }
+    }
+
     @Override
     public boolean shouldRender(Minecraft mc)
     {
@@ -90,11 +118,43 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
     @Override
     public boolean needsUpdate(Entity entity, Minecraft mc)
     {
-        return this.needsUpdate || this.lastUpdatePos == null ||
-                Math.abs(entity.getX() - this.lastUpdatePos.getX()) > 4 ||
+        return this.needsUpdate || this.detectPlayerMove(entity) ||
+                (Configs.Generic.LIGHT_LEVEL_NUMBER_ROTATION.getBooleanValue() &&
+                        Configs.Generic.LIGHT_LEVEL_NUMBER_CONDITION.getOptionListValue() != LightLevelRenderCondition.NEVER &&
+                        this.lastDirection != entity.getDirection());
+    }
+
+    private boolean detectPlayerMove(Entity entity)
+    {
+        if (this.lastUpdatePos == null)
+        {
+            return true;
+        }
+
+        boolean movedRange = Math.abs(entity.getX() - this.lastUpdatePos.getX()) > 4 ||
                 Math.abs(entity.getY() - this.lastUpdatePos.getY()) > 4 ||
-                Math.abs(entity.getZ() - this.lastUpdatePos.getZ()) > 4 ||
-                (Configs.Generic.LIGHT_LEVEL_NUMBER_ROTATION.getBooleanValue() && this.lastDirection != entity.getDirection());
+                Math.abs(entity.getZ() - this.lastUpdatePos.getZ()) > 4;
+        if (movedRange == false)
+        {
+            return false;
+        }
+
+        if (this.lastInShapes == null)
+        {
+            return true;
+        }
+
+        BlockPos pos = PositionUtils.getEntityBlockPos(entity);
+        boolean match = this.lastInShapes.stream().allMatch(s -> s.contains(pos.getX(), pos.getY(), pos.getZ())) &&
+                (this.lastOutShapes == null || this.lastOutShapes.stream().allMatch(s -> s.contains(pos.getX(), pos.getY(), pos.getZ()) == false));
+        if (match)
+        {
+            this.lastUpdatePos = pos;
+            return false;
+        }
+
+        this.setNeedsUpdate();
+        return true;
     }
 
     @Override
@@ -486,16 +546,106 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
     private boolean updateLightLevels(Level world, BlockPos center)
     {
         this.lightInfos.clear();
+        this.lastInShapes = null;
+        this.lastOutShapes = null;
 
         //System.out.printf("LL center %s\n", center.toShortString());
 
-        int radius = Configs.Generic.LIGHT_LEVEL_RANGE.getIntegerValue();
-        final int minX = center.getX() - radius;
-        final int minY = center.getY() - radius;
-        final int minZ = center.getZ() - radius;
-        final int maxX = center.getX() + radius;
-        final int maxY = center.getY() + radius;
-        final int maxZ = center.getZ() + radius;
+        final boolean aggressiveOpt = Configs.Generic.LIGHT_LEVEL_AGGRESSIVE_OPTIMIZATION.getBooleanValue();
+
+        final int minX, minY, minZ, maxX, maxY, maxZ;
+        BiPredicate<Integer, Integer> chunkPredicate = (_, _) -> true;
+        BiFunction<Integer, Integer, Integer> additionalMinY = (_, _) -> Integer.MIN_VALUE;
+        BiFunction<Integer, Integer, Integer> additionalMaxY = (_, _) -> Integer.MAX_VALUE;
+        // decides if posPredicate can be skipped.
+        IChunkLayerPredicate fullPredicate = (_, _, _) -> true;
+        // expects getting called after chunkPredicate.
+        Predicate<BlockPos> posPredicate = Predicates.alwaysTrue();
+        configure:
+        {
+            final boolean ssFull = Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_FULL.getBooleanValue();
+            final boolean ssLimit = Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_LIMIT.getBooleanValue();
+
+            if (ssFull || ssLimit)
+            {
+                List<ShapeSpawnSphere> allSpawnSpheres = ShapeManager.INSTANCE.getAllShapes().stream()
+                        .filter(s -> s instanceof ShapeSpawnSphere && s.isEnabled())
+                        .map(s -> (ShapeSpawnSphere) s)
+                        .toList();
+                List<ShapeSpawnSphere> spawnSpheres = allSpawnSpheres.stream()
+                        .filter(s -> s.contains(center.getX(), center.getY(), center.getZ()))
+                        .sorted(Comparator.<ShapeSpawnSphere>comparingDouble(s -> s.getMargin() + s.getRadius()).reversed())
+                        .toList();
+
+                if (spawnSpheres.isEmpty() == false)
+                {
+                    fullPredicate = (_, _, _) -> false;
+
+                    if (ssFull)
+                    {
+                        this.lastInShapes = spawnSpheres;
+                        this.lastOutShapes = allSpawnSpheres.stream()
+                                .filter(s -> spawnSpheres.contains(s) == false)
+                                .toList();
+                    }
+
+                    if (spawnSpheres.size() == 1)
+                    {
+                        ShapeSpawnSphere ss = spawnSpheres.getFirst();
+                        chunkPredicate = ss::mayIntersectWithChunk;
+                        additionalMinY = ss::getChunkIntersectMinY;
+                        additionalMaxY = ss::getChunkIntersectMaxY;
+                        if (aggressiveOpt)
+                        {
+                            fullPredicate = ss::containsChunkLayer;
+                        }
+                        posPredicate = pos -> ss.contains(pos.getX(), pos.getY(), pos.getZ());
+                    }
+                    else
+                    {
+                        List<ShapeSpawnSphere> filteredSpawnSpheres = new ArrayList<>();
+                        chunkPredicate = (cx, cz) -> {
+                            filteredSpawnSpheres.clear();
+                            filteredSpawnSpheres.addAll(spawnSpheres.stream()
+                                    .filter(s -> s.mayIntersectWithChunk(cx, cz)).toList());
+                            return filteredSpawnSpheres.isEmpty() == false;
+                        };
+                        if (aggressiveOpt)
+                        {
+                            fullPredicate = (cx, cz, y) -> filteredSpawnSpheres.stream()
+                                    .anyMatch(s -> s.containsChunkLayer(cx, cz, y));
+                        }
+                        posPredicate = pos -> filteredSpawnSpheres.stream()
+                                .anyMatch(s -> s.contains(pos.getX(), pos.getY(), pos.getZ()));
+                        additionalMinY = (cx, cz) -> spawnSpheres.stream()
+                                .mapToInt(s -> s.getChunkIntersectMinY(cx, cz)).min().getAsInt();
+                        additionalMaxY = (cx, cz) -> spawnSpheres.stream()
+                                .mapToInt(s -> s.getChunkIntersectMaxY(cx, cz)).min().getAsInt();
+                    }
+
+                    if (ssFull)
+                    {
+                        minX = spawnSpheres.stream().mapToInt(s -> (int) Math.floor(s.getEffectiveCenter().x - s.getMargin() - s.getRadius())).min().getAsInt();
+                        minY = spawnSpheres.stream().mapToInt(s -> (int) Math.floor(s.getEffectiveCenter().y                 - s.getRadius())).min().getAsInt();
+                        minZ = spawnSpheres.stream().mapToInt(s -> (int) Math.floor(s.getEffectiveCenter().z - s.getMargin() - s.getRadius())).min().getAsInt();
+                        maxX = spawnSpheres.stream().mapToInt(s -> (int) Math.ceil(s.getEffectiveCenter().x + s.getMargin() + s.getRadius())).max().getAsInt();
+                        maxY = spawnSpheres.stream().mapToInt(s -> (int) Math.ceil(s.getEffectiveCenter().y                 + s.getRadius())).max().getAsInt();
+                        maxZ = spawnSpheres.stream().mapToInt(s -> (int) Math.ceil(s.getEffectiveCenter().z + s.getMargin() + s.getRadius())).max().getAsInt();
+                        break configure;
+                    }
+                }
+            }
+
+            // default
+            int radius = Configs.Generic.LIGHT_LEVEL_RANGE.getIntegerValue();
+            minX = center.getX() - radius;
+            minY = center.getY() - radius;
+            minZ = center.getZ() - radius;
+            maxX = center.getX() + radius;
+            maxY = center.getY() + radius;
+            maxZ = center.getZ() + radius;
+        }
+
         final int minCX = (minX >> 4);
         final int minCZ = (minZ >> 4);
         final int maxCX = (maxX >> 4);
@@ -508,6 +658,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         final boolean autoHeight = Configs.Generic.LIGHT_LEVEL_AUTO_HEIGHT.getBooleanValue();
         final boolean skipBlockCheck = Configs.Generic.LIGHT_LEVEL_SKIP_BLOCK_CHECK.getBooleanValue();
 
+        this.underWater = underWater;
+
+        BlockState lastSkip = null;
+
         for (int cx = minCX; cx <= maxCX; ++cx)
         {
             final int startX = Math.max( cx << 4      , minX);
@@ -515,11 +669,22 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
             for (int cz = minCZ; cz <= maxCZ; ++cz)
             {
+                if (chunkPredicate.test(cx, cz) == false)
+                {
+                    continue;
+                }
+
+                LevelChunk chunk = world.getChunk(cx, cz);
+                if (chunk.isEmpty())
+                {
+                    continue;
+                }
+
                 final int startZ = Math.max( cz << 4      , minZ);
                 final int endZ   = Math.min((cz << 4) + 15, maxZ);
-                LevelChunk chunk = world.getChunk(cx, cz);
-                final int startY = Math.max(minY, world.getMinY());
-                final int endY = Math.min(maxY, WorldUtils.getHighestSectionYOffset(chunk) + 15 + 1);
+                final int startY = Math.max(Math.max(minY, world.getMinY()), additionalMinY.apply(cx, cz));
+                final int endY = Math.min(Math.min(maxY, WorldUtils.getHighestSectionYOffset(chunk) + 15 + 1), additionalMaxY.apply(cx, cz));
+                int checkedSectionY = 1; // anything but multiply of 16
 
                 for (int y = startY; y <= endY; ++y)
                 {
@@ -531,21 +696,64 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                         if (section.hasOnlyAir())
                         {
                             //y += 16 - (y & 0xF);
+                            // jump to the next section if y - 1 is the same section.
+                            // essentially Math.ceil(y / 16.0) * 16.
+                            // the code above fails when y & 0xF == 0.
+                            y = ((y - 1) | 0xF) + 1;
                             continue;
                         }
                     }
+
+                    if (aggressiveOpt && checkedSectionY != (y & ~0xF))
+                    {
+                        checkedSectionY = y & ~0xF;
+                        LevelChunkSection section = chunk.getSection(chunk.getSectionIndex(y));
+                        // fake pos, may cause inaccurate result.
+                        mutablePos.set(cx << 4, checkedSectionY, cz << 4);
+                        // If there are all conductors (blocks spawning), then we can skip it
+                        boolean hasNonConductor = section.getStates().maybeHas(s -> s.isRedstoneConductor(world, mutablePos) == false);
+                        if (hasNonConductor == false)
+                        {
+                            y |= 0xF;
+                            continue;
+                        }
+                        // according to spark profiler, analyzing palette and directly iterate IntList
+                        // might optimize another 25%. but it needs mixin to get raw palette and IntList,
+                        // and sounds difficult to maintain.
+                    }
+
+                    boolean full = fullPredicate.test(cx, cz, y);
 
                     for (int x = startX; x <= endX; ++x)
                     {
                         for (int z = startZ; z <= endZ; ++z)
                         {
-                            if (this.canSpawnAtWrapper(x, y, z, chunk, world, skipBlockCheck) == false)
+                            mutablePos.set(x, y, z);
+                            if (full == false && posPredicate.test(mutablePos) == false)
                             {
                                 continue;
                             }
 
-                            mutablePos.set(x, y, z);
                             BlockState state = chunk.getBlockState(mutablePos);
+                            if (aggressiveOpt)
+                            {
+                                // compares with state at another pos, may cause inaccurate result.
+                                if (lastSkip == state)
+                                {
+                                    continue;
+                                }
+
+                                if (state.isRedstoneConductor(world, mutablePos))
+                                {
+                                    lastSkip = state;
+                                    continue;
+                                }
+                            }
+
+                            if (this.canSpawnAtWrapper(x, y, z, chunk, world, skipBlockCheck) == false)
+                            {
+                                continue;
+                            }
 
                             if ((collisionCheck == false || state.getCollisionShape(chunk, mutablePos).isEmpty()) &&
                                 (underWater || state.getFluidState().isEmpty()))
@@ -608,7 +816,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                 return this.isClearForSpawnWrapper(world, this.mutablePos, stateUp1, state.getFluidState(), EntityTypes.WITHER_SKELETON);
             }
 
-            if (state.getFluidState().is(FluidTags.WATER))
+            if (this.underWater && state.getFluidState().is(FluidTags.WATER))
             {
                 this.mutablePos.set(x, y + 1, z);
                 BlockState stateUp1 = chunk.getBlockState(this.mutablePos);
@@ -666,5 +874,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
     private interface IMarkerRenderer
     {
         void render(float x, float y, float z, Color4f color, float offset1, float offset2, float lineWidth, BufferBuilder buffer);
+    }
+
+    private interface IChunkLayerPredicate
+    {
+        boolean test(int chunkX, int chunkZ, int y);
     }
 }
