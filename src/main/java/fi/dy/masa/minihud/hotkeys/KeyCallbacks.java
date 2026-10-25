@@ -73,6 +73,8 @@ public class KeyCallbacks
         Configs.Generic.CONDUIT_RANGE_OVERLAY_COMBINE_QUADS.setValueChangeCallback((config) -> OverlayRendererConduitRange.INSTANCE.setNeedsUpdate());
         Configs.Generic.CONDUIT_RANGE_OVERLAY_RENDER_OUTLINES.setValueChangeCallback((config) -> OverlayRendererConduitRange.INSTANCE.setNeedsUpdate());
         Configs.Generic.LIGHT_LEVEL_RANGE.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.setNeedsUpdate());
+        Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_FULL.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.setNeedsUpdate());
+        Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_LIMIT.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.setNeedsUpdate());
         Configs.Generic.SLIME_CHUNK_TOP_TO_PLAYER.setValueChangeCallback((config) -> OverlayRendererSlimeChunks.INSTANCE.setNeedsUpdate());
         Configs.Generic.SLIME_CHUNK_OVERLAY_RADIUS.setValueChangeCallback((config) -> OverlayRendererSlimeChunks.INSTANCE.setNeedsUpdate());
         Configs.Generic.SPAWN_PLAYER_OUTER_OVERLAY_ENABLED.setValueChangeCallback((config) -> OverlayRendererSpawnChunks.INSTANCE_PLAYER.setNeedsUpdate());

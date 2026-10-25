@@ -4,6 +4,8 @@ import java.util.List;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
+import fi.dy.masa.minihud.renderer.OverlayRendererLightLevel;
+import net.minecraft.client.Minecraft;
 import net.minecraft.core.Direction;
 
 import fi.dy.masa.malilib.util.MathUtils;
@@ -14,6 +16,8 @@ import fi.dy.masa.malilib.util.position.Quadrant;
 import fi.dy.masa.malilib.util.position.Vec3d;
 import fi.dy.masa.minihud.config.Configs;
 import fi.dy.masa.minihud.util.shape.SphereUtils;
+import net.minecraft.util.profiling.ProfilerFiller;
+import net.minecraft.world.entity.Entity;
 
 public class ShapeSpawnSphere extends ShapeSphereBlocky
 {
@@ -45,6 +49,25 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
     }
 
     @Override
+    public void update(Vec3d cameraPos, Entity entity, Minecraft mc, ProfilerFiller profiler)
+    {
+        super.update(cameraPos, entity, mc, profiler);
+
+        OverlayRendererLightLevel.INSTANCE.onSpawnSphereUpdate();
+    }
+
+    @Override
+    public void toggleEnabled()
+    {
+        super.toggleEnabled();
+
+        if (this.isEnabled() == false)
+        {
+            OverlayRendererLightLevel.INSTANCE.onSpawnSphereUpdate();
+        }
+    }
+
+    @Override
     protected void updateEffectiveCenter()
     {
         super.updateEffectiveCenter();
@@ -66,6 +89,12 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
         this.quadrantCenters[Quadrant.SOUTH_EAST.ordinal()] = new Vec3d(center.x + this.margin, center.y, center.z + this.margin);
 
         this.setNeedsUpdate();
+    }
+
+    @Override
+    public void onRemove()
+    {
+        OverlayRendererLightLevel.INSTANCE.onSpawnSphereUpdate();
     }
 
     public double getMargin()
@@ -115,6 +144,53 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
         super.fromJson(obj);
 
         this.setMargin(JsonUtils.getDouble(obj, "margin"));
+    }
+
+    public boolean contains(int x, int y, int z)
+    {
+        return isPositionOnOrInsideRing(x, y, z, Direction.DOWN);
+    }
+
+    private double getMinDistSqToChunk(int chunkX, int chunkZ)
+    {
+        final Vec3d effectiveCenter = this.getEffectiveCenter();
+        double x = MathUtils.clamp(effectiveCenter.x, chunkX << 4, (chunkX << 4) + 16);
+        double z = MathUtils.clamp(effectiveCenter.z, chunkZ << 4, (chunkZ << 4) + 16);
+        double margin = this.margin;
+        double centerX = MathUtils.clamp(x, effectiveCenter.x - margin, effectiveCenter.x + margin);
+        double centerZ = MathUtils.clamp(z, effectiveCenter.z - margin, effectiveCenter.z + margin);
+        double distX = x - centerX;
+        double distZ = z - centerZ;
+        return distX * distX + distZ * distZ;
+    }
+
+    public boolean mayIntersectWithChunk(int chunkX, int chunkZ)
+    {
+        return this.getMinDistSqToChunk(chunkX, chunkZ) < this.getSquaredRadius();
+    }
+
+    // I'm not sure if this is accurate if useCornerQuadrants is true.
+    // let's hope that no one would use it with 100 margin.
+    public boolean containsChunkLayer(int chunkX, int chunkZ, int y)
+    {
+        int ox = chunkX << 4;
+        int oz = chunkZ << 4;
+        final Vec3d effectiveCenter = this.getEffectiveCenter();
+        int x = effectiveCenter.x > ox + 8 ? ox - 2 : ox + 18;
+        int z = effectiveCenter.z > oz + 8 ? oz - 2 : oz + 18;
+        return contains(x, y, z);
+    }
+
+    public int getChunkIntersectMinY(int chunkX, int chunkZ)
+    {
+        double r = Math.sqrt(Math.max(0, this.getSquaredRadius() - this.getMinDistSqToChunk(chunkX, chunkZ)));
+        return (int) Math.floor(this.getEffectiveCenter().y - r) - 1;
+    }
+
+    public int getChunkIntersectMaxY(int chunkX, int chunkZ)
+    {
+        double r = Math.sqrt(Math.max(0, this.getSquaredRadius() - this.getMinDistSqToChunk(chunkX, chunkZ)));
+        return (int) Math.ceil(this.getEffectiveCenter().y + r) + 1;
     }
 
     @Override
