@@ -3,6 +3,7 @@ package fi.dy.masa.minihud.renderer;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Predicate;
@@ -10,6 +11,7 @@ import java.util.function.Predicate;
 import com.google.common.base.Predicates;
 import fi.dy.masa.minihud.renderer.shapes.ShapeManager;
 import fi.dy.masa.minihud.renderer.shapes.ShapeSpawnSphere;
+import net.minecraft.world.level.*;
 import org.joml.Matrix4f;
 
 import com.mojang.blaze3d.vertex.BufferBuilder;
@@ -25,10 +27,6 @@ import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
-import net.minecraft.world.level.BlockGetter;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.LightLayer;
-import net.minecraft.world.level.NaturalSpawner;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -61,6 +59,20 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 {
     public static final OverlayRendererLightLevel INSTANCE = new OverlayRendererLightLevel();
     private static final Identifier TEXTURE_NUMBERS = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/misc/light_level_numbers.png");
+    private static final Set<ChunkPos> SLIME_CHUNKS = Set.of(
+            new ChunkPos(64, -3552), new ChunkPos(65, -3551), new ChunkPos(72, -3551),
+            new ChunkPos(64, -3550), new ChunkPos(70, -3549), new ChunkPos(73, -3548),
+            new ChunkPos(65, -3547), new ChunkPos(68, -3546), new ChunkPos(73, -3545),
+            new ChunkPos(64, -3544), new ChunkPos(71, -3544), new ChunkPos(70, -3543),
+            new ChunkPos(72, -3543), new ChunkPos(74, -3542), new ChunkPos(75, -3542),
+            new ChunkPos(64, -3541), new ChunkPos(72, -3540), new ChunkPos(70, -3539),
+            new ChunkPos(72, -3538), new ChunkPos(65, -3536), new ChunkPos(71, -3536),
+            new ChunkPos(64, -3535), new ChunkPos(72, -3535), new ChunkPos(62, -3535),
+            new ChunkPos(59, -3548), new ChunkPos(60, -3548), new ChunkPos(59, -3547),
+            new ChunkPos(58, -3546), new ChunkPos(60, -3546), new ChunkPos(61, -3546),
+            new ChunkPos(58, -3544), new ChunkPos(57, -3542), new ChunkPos(58, -3538),
+            new ChunkPos(60, -3538), new ChunkPos(63, -3537)
+    );
 
     private final List<LightLevelInfo> lightInfos;
     private BlockPos.MutableBlockPos mutablePos;
@@ -549,6 +561,8 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         this.lastInShapes = null;
         this.lastOutShapes = null;
 
+        final boolean slimeMode = Configs.Generic.LIGHT_LEVEL_SLIME_MODE.getBooleanValue();
+
         //System.out.printf("LL center %s\n", center.toShortString());
 
         final boolean aggressiveOpt = Configs.Generic.LIGHT_LEVEL_AGGRESSIVE_OPTIMIZATION.getBooleanValue();
@@ -646,6 +660,11 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
             maxZ = center.getZ() + radius;
         }
 
+        if (slimeMode) {
+            final BiFunction<Integer, Integer, Integer> orig = additionalMaxY;
+            additionalMaxY = (cx, cz) -> Math.min(orig.apply(cx, cz), 40 + 1);
+        }
+
         final int minCX = (minX >> 4);
         final int minCZ = (minZ >> 4);
         final int maxCX = (maxX >> 4);
@@ -669,6 +688,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
             for (int cz = minCZ; cz <= maxCZ; ++cz)
             {
+                if (slimeMode && SLIME_CHUNKS.contains(new ChunkPos(cx, cz)) == false)
+                {
+                    continue;
+                }
                 if (chunkPredicate.test(cx, cz) == false)
                 {
                     continue;
@@ -758,16 +781,29 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                             if ((collisionCheck == false || state.getCollisionShape(chunk, mutablePos).isEmpty()) &&
                                 (underWater || state.getFluidState().isEmpty()))
                             {
-                                int block = y < worldTopHeight ? lightingProvider.getLayerListener(LightLayer.BLOCK).getLightValue(mutablePos) : 0;
-                                int sky   = y < worldTopHeight ? lightingProvider.getLayerListener(LightLayer.SKY).getLightValue(mutablePos) : 15;
-                                double topY = state.getShape(chunk, mutablePos).max(Direction.Axis.Y);
+                                int block = 0;
+                                int sky = 15;
+                                double topY = autoHeight ? state.getShape(chunk, mutablePos).max(Direction.Axis.Y) : 0;
+
+                                if (slimeMode)
+                                {
+                                    sky = 0;
+                                }
+                                else if (y < worldTopHeight)
+                                {
+                                    block = lightingProvider.getLayerListener(LightLayer.BLOCK).getLightValue(mutablePos);
+                                    sky   = lightingProvider.getLayerListener(LightLayer.SKY).getLightValue(mutablePos);
+                                }
 
                                 // Don't render the light level marker if it would be raised all the way to the next block space
-                                if (autoHeight == false || topY < 1)
+                                if (topY < 1)
                                 {
-                                    float posY = topY >= 0 ? y + (float) topY : y;
+                                    float posY = topY > 0 ? y + (float) topY : y;
                                     this.lightInfos.add(new LightLevelInfo(mutablePos.asLong(), posY, block, sky));
                                     //y += 2; // if the spot is spawnable, that means the next spawnable spot can be the third block up
+                                    // but this code scan layer by layer so this doesn't really work,
+                                    // unless you can prove that this entire layer is spawnable,
+                                    // which is unlikely in natural terrain.
                                 }
                             }
                         }
