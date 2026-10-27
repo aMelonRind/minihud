@@ -1,15 +1,17 @@
 package fi.dy.masa.minihud.renderer;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
 import com.google.common.base.Predicates;
+import fi.dy.masa.minihud.util.LightLevelChunkInfo;
+import fi.dy.masa.minihud.util.LightLevelInfo;
 import fi.dy.masa.minihud.renderer.shapes.ShapeManager;
 import fi.dy.masa.minihud.renderer.shapes.ShapeSpawnSphere;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import net.minecraft.world.level.*;
 import org.joml.Matrix4f;
 
 import com.mojang.blaze3d.vertex.BufferBuilder;
@@ -25,10 +27,6 @@ import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
-import net.minecraft.world.level.BlockGetter;
-import net.minecraft.world.level.Level;
-import net.minecraft.world.level.LightLayer;
-import net.minecraft.world.level.NaturalSpawner;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -55,34 +53,32 @@ import fi.dy.masa.minihud.util.LightLevelMarkerMode;
 import fi.dy.masa.minihud.util.LightLevelNumberMode;
 import fi.dy.masa.minihud.util.LightLevelRenderCondition;
 
-import javax.annotation.Nullable;
-
 public class OverlayRendererLightLevel extends OverlayRendererBase
 {
     public static final OverlayRendererLightLevel INSTANCE = new OverlayRendererLightLevel();
     private static final Identifier TEXTURE_NUMBERS = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/misc/light_level_numbers.png");
 
-    private final List<LightLevelInfo> lightInfos;
+    private final Timer timer;
+    private final ChunkLightInfoMap lightInfos;
     private BlockPos.MutableBlockPos mutablePos;
     private Direction lastDirection;
-    @Nullable private List<ShapeSpawnSphere> lastInShapes;
-    @Nullable private List<ShapeSpawnSphere> lastOutShapes;
+    private List<ShapeSpawnSphere> lastSpawnSpheres;
 
+    private boolean ignoreRange;
     private boolean tagsBroken;
     private boolean needsUpdate;
-    private boolean hasData;
+    private boolean needsDataUpdate;
 
     // if implemented as method param, it'll break tweakermore.
     private boolean underWater;
 
     protected OverlayRendererLightLevel()
     {
-        this.lightInfos = new ArrayList<>();
+        this.timer = new Timer();
+        this.lightInfos = new ChunkLightInfoMap();
         this.mutablePos = new BlockPos.MutableBlockPos();
         this.lastDirection = Direction.NORTH;
-        this.hasData = false;
-        this.lastInShapes = null;
-        this.lastOutShapes = null;
+        this.needsDataUpdate = true;
     }
 
     @Override
@@ -91,11 +87,24 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         return "LightLevel";
     }
 
-    public void setNeedsUpdate()
+    public void markNeedsUpdate(boolean clearData)
     {
+        if (clearData)
+        {
+            this.needsDataUpdate = true;
+            this.lightInfos.clear();
+        }
+
         this.needsUpdate = true;
         // Clean buffers when receiving the RenderCallback.
         this.clearBuffers();
+    }
+
+    public void markChunkChanged(int cx, int cz)
+    {
+        this.needsUpdate = true;
+        this.needsDataUpdate = true;
+        this.lightInfos.removeNeighbors(cx, cz);
     }
 
     public void onSpawnSphereUpdate()
@@ -105,7 +114,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
         if (hasShapeInteraction)
         {
-            OverlayRendererLightLevel.INSTANCE.setNeedsUpdate();
+            this.markNeedsUpdate(true);
         }
     }
 
@@ -118,43 +127,23 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
     @Override
     public boolean needsUpdate(Entity entity, Minecraft mc)
     {
-        return this.needsUpdate || this.detectPlayerMove(entity) ||
+        if (this.needsDataUpdate || this.lastUpdatePos == null)
+        {
+            this.needsDataUpdate = true;
+            return true;
+        }
+
+        int dist = PositionUtils.getEntityBlockPos(entity).distManhattan(this.lastUpdatePos);
+        if (dist >= this.timer.getMinDist())
+        {
+            this.needsDataUpdate = true;
+            return true;
+        }
+
+        return this.needsUpdate ||
                 (Configs.Generic.LIGHT_LEVEL_NUMBER_ROTATION.getBooleanValue() &&
                         Configs.Generic.LIGHT_LEVEL_NUMBER_CONDITION.getOptionListValue() != LightLevelRenderCondition.NEVER &&
                         this.lastDirection != entity.getDirection());
-    }
-
-    private boolean detectPlayerMove(Entity entity)
-    {
-        if (this.lastUpdatePos == null)
-        {
-            return true;
-        }
-
-        boolean movedRange = Math.abs(entity.getX() - this.lastUpdatePos.getX()) > 4 ||
-                Math.abs(entity.getY() - this.lastUpdatePos.getY()) > 4 ||
-                Math.abs(entity.getZ() - this.lastUpdatePos.getZ()) > 4;
-        if (movedRange == false)
-        {
-            return false;
-        }
-
-        if (this.lastInShapes == null)
-        {
-            return true;
-        }
-
-        BlockPos pos = PositionUtils.getEntityBlockPos(entity);
-        boolean match = this.lastInShapes.stream().allMatch(s -> s.contains(pos.getX(), pos.getY(), pos.getZ())) &&
-                (this.lastOutShapes == null || this.lastOutShapes.stream().allMatch(s -> s.contains(pos.getX(), pos.getY(), pos.getZ()) == false));
-        if (match)
-        {
-            this.lastUpdatePos = pos;
-            return false;
-        }
-
-        this.setNeedsUpdate();
-        return true;
     }
 
     @Override
@@ -163,30 +152,37 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         if (mc.level == null)
         {
             this.needsUpdate = false;
+            this.needsDataUpdate = false;
             return;
         }
 
-//        long pre = System.nanoTime();
+        this.timer.timeUpdate();
         BlockPos pos = PositionUtils.getEntityBlockPos(entity);
-        this.hasData = this.updateLightLevels(mc.level, pos);
+        if (this.needsDataUpdate)
+        {
+            this.updateLightLevels(mc.level, pos);
+        }
         this.renderThrough = Configs.Generic.LIGHT_LEVEL_RENDER_THROUGH.getBooleanValue();
 
+        this.timer.timeRender();
         if (this.hasData())
         {
             this.render(cameraPos, mc, profiler);
         }
 
-//        System.out.printf("LL markers: %d, time: %.3f s\n", this.lightInfos.size(), (double) (System.nanoTime() - pre) / 1000000000D);
+        this.timer.timeEnd();
+        this.timer.debugLog();
 
         this.lastUpdatePos = pos;
         this.lastDirection = entity.getDirection();
         this.needsUpdate = false;
+        this.needsDataUpdate = false;
     }
 
     @Override
     public boolean hasData()
     {
-        return this.hasData && !this.lightInfos.isEmpty();
+        return this.lightInfos.isEmpty() == false;
     }
 
     @Override
@@ -215,12 +211,20 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
             return;
         }
 
+        LightLevelNumberMode numberMode = (LightLevelNumberMode) Configs.Generic.LIGHT_LEVEL_NUMBER_MODE.getOptionListValue();
+        LightLevelRenderCondition condition = (LightLevelRenderCondition) Configs.Generic.LIGHT_LEVEL_NUMBER_CONDITION.getOptionListValue();
+        if (numberMode == LightLevelNumberMode.NONE || condition == LightLevelRenderCondition.NEVER)
+        {
+            return;
+        }
+
         profiler.push("light_level_quads");
         int safeThreshold = Configs.Generic.LIGHT_LEVEL_THRESHOLD_SAFE.getIntegerValue();
         int dimThreshold = Configs.Generic.LIGHT_LEVEL_THRESHOLD_DIM.getIntegerValue();
-        Direction numberFacing = Configs.Generic.LIGHT_LEVEL_NUMBER_ROTATION.getBooleanValue() ? mc.player.getDirection() : Direction.NORTH;
+        Direction numberFacing = Configs.Generic.LIGHT_LEVEL_NUMBER_ROTATION.getBooleanValue()
+                ? Objects.requireNonNullElse(mc.getCameraEntity(), mc.player).getDirection()
+                : Direction.NORTH;
         boolean useColoredNumbers = Configs.Generic.LIGHT_LEVEL_COLORED_NUMBERS.getBooleanValue();
-        LightLevelNumberMode numberMode = (LightLevelNumberMode) Configs.Generic.LIGHT_LEVEL_NUMBER_MODE.getOptionListValue();
 
         // this.renderThrough ? MaLiLibPipelines.POSITION_TEX_COLOR_SIMPLE : MaLiLibPipelines.POSITION_TEX_COLOR_LESSER_DEPTH
         RenderObjectVbo ctx = this.renderObjects.getFirst();
@@ -289,12 +293,19 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
             return;
         }
 
+        LightLevelMarkerMode markerMode = (LightLevelMarkerMode) Configs.Generic.LIGHT_LEVEL_MARKER_MODE.getOptionListValue();
+        LightLevelRenderCondition condition = (LightLevelRenderCondition) Configs.Generic.LIGHT_LEVEL_MARKER_CONDITION.getOptionListValue();
+        if (markerMode == LightLevelMarkerMode.NONE || condition == LightLevelRenderCondition.NEVER)
+        {
+            return;
+        }
+
         profiler.push("light_level_outlines");
         int safeThreshold = Configs.Generic.LIGHT_LEVEL_THRESHOLD_SAFE.getIntegerValue();
         int dimThreshold = Configs.Generic.LIGHT_LEVEL_THRESHOLD_DIM.getIntegerValue();
-        LightLevelMarkerMode markerMode = (LightLevelMarkerMode) Configs.Generic.LIGHT_LEVEL_MARKER_MODE.getOptionListValue();
 
         RenderObjectVbo ctx = this.renderObjects.get(1);
+        // According to spark, could save ~10% cpu time by having a way to set initial ByteBufferBuilder capacity.
         BufferBuilder builder = ctx.start(() -> "minihud:light_level/outlines", this.renderThrough ? MaLiLibPipelines.DEBUG_LINES_MASA_SIMPLE_NO_DEPTH_NO_CULL : MaLiLibPipelines.DEBUG_LINES_MASA_SIMPLE_LEQUAL_DEPTH, 0);
 
         if (markerMode == LightLevelMarkerMode.SQUARE)
@@ -332,9 +343,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         this.lightInfos.clear();
         this.mutablePos = new BlockPos.MutableBlockPos();
         this.lastDirection = Direction.NORTH;
-        this.hasData = false;
+        this.needsDataUpdate = true;
     }
 
+    @SuppressWarnings({"EnhancedSwitchMigration", "DuplicateBranchesInSwitch"})
     private void renderNumbers(Vec3d cameraPos,
                                LightLevelNumberMode mode,
                                IConfigDouble cfgOffX,
@@ -399,17 +411,41 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         double offsetZ = cameraPos.z;
         double offset1 = (1.0 - markerSize) / 2.0;
         double offset2 = (1.0 - offset1);
-        boolean autoHeight = Configs.Generic.LIGHT_LEVEL_AUTO_HEIGHT.getBooleanValue();
         Color4f color;
+        int range = this.ignoreRange ? Integer.MAX_VALUE : Configs.Generic.LIGHT_LEVEL_RANGE.getIntegerValue();
+        int minY = this.ignoreRange ? Integer.MIN_VALUE : (int) Math.floor(offsetY - range);
 
-        for (LightLevelInfo info : this.lightInfos)
+        Predicate<Integer> blockLightPredicate = b -> condition.shouldRender(b, dimThreshold, safeThreshold);
+
+        for (LightLevelChunkInfo chunk : this.lightInfos.values())
         {
-            if (condition.shouldRender(info.block, dimThreshold, safeThreshold))
+            if (chunk.isEmpty())
             {
-                long pos = info.pos;
-                double x = BlockPos.getX(pos) - offsetX;
-                double y = (autoHeight ? info.y : BlockPos.getY(pos)) - offsetY;
-                double z = BlockPos.getZ(pos) - offsetZ;
+                continue;
+            }
+
+            boolean checkXZ = this.ignoreRange == false &&
+                   (chunk.x < offsetX - range ||
+                    chunk.x + 16 > offsetX + range ||
+                    chunk.z < offsetZ - range ||
+                    chunk.z + 16 > offsetZ + range);
+            if (checkXZ && (
+                    chunk.x > offsetX + range ||
+                    chunk.x + 16 < offsetX - range ||
+                    chunk.z > offsetZ + range ||
+                    chunk.z + 16 < offsetZ - range))
+            {
+                continue;
+            }
+            for (LightLevelInfo info : chunk.iterable(minY, blockLightPredicate))
+            {
+                double x = info.x - offsetX;
+                double y = info.y - offsetY;
+                double z = info.z - offsetZ;
+                if (checkXZ && (Math.abs(x) > range || Math.abs(z) > range) || y > range)
+                {
+                    continue;
+                }
 
                 if (info.block < safeThreshold)
                 {
@@ -441,17 +477,40 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                                          PoseStack.Pose e)
     {
         LightLevelRenderCondition condition = (LightLevelRenderCondition) Configs.Generic.LIGHT_LEVEL_NUMBER_CONDITION.getOptionListValue();
-        boolean autoHeight = Configs.Generic.LIGHT_LEVEL_AUTO_HEIGHT.getBooleanValue();
         Color4f color;
+        int range = Configs.Generic.LIGHT_LEVEL_NUMBER_RANGE.getIntegerValue();
+        int minY = (int) Math.floor(dy - range);
 
-        for (LightLevelInfo info : this.lightInfos)
+        Predicate<Integer> blockLightPredicate = b -> condition.shouldRender(b, dimThreshold, safeThreshold);
+
+        for (LightLevelChunkInfo chunk : this.lightInfos.values())
         {
-            if (condition.shouldRender(info.block, dimThreshold, safeThreshold))
+            if (chunk.isEmpty())
             {
-                long pos = info.pos;
-                double x = BlockPos.getX(pos) - dx;
-                double y = (autoHeight ? info.y : BlockPos.getY(pos)) - dy;
-                double z = BlockPos.getZ(pos) - dz;
+                continue;
+            }
+
+            boolean checkXZ = chunk.x < dx - range ||
+                    chunk.x + 16 > dx + range ||
+                    chunk.z < dz - range ||
+                    chunk.z + 16 > dz + range;
+            if (checkXZ && (
+                    chunk.x > dx + range ||
+                    chunk.x + 16 < dx - range ||
+                    chunk.z > dz + range ||
+                    chunk.z + 16 < dz - range))
+            {
+                continue;
+            }
+            for (LightLevelInfo info : chunk.iterable(minY, blockLightPredicate))
+            {
+                double x = info.x - dx;
+                double y = info.y - dy;
+                double z = info.z - dz;
+                if (checkXZ && (Math.abs(x) > range || Math.abs(z) > range) || y > range)
+                {
+                    continue;
+                }
                 int lightLevel = numberMode == LightLevelNumberMode.BLOCK ? info.block : info.sky;
 
                 if (lightLevel < safeThreshold)
@@ -484,10 +543,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         switch (facing)
         {
             case NORTH:
-                buffer.addVertex(m, x, y, z).setUv(u    , v    ).setColor(color.r, color.g, color.b, color.a);
-                buffer.addVertex(m, x, y, z + 1).setUv(u    , v + w).setColor(color.r, color.g, color.b, color.a);
+                buffer.addVertex(m, x    , y, z    ).setUv(u    , v    ).setColor(color.r, color.g, color.b, color.a);
+                buffer.addVertex(m, x    , y, z + 1).setUv(u    , v + w).setColor(color.r, color.g, color.b, color.a);
                 buffer.addVertex(m, x + 1, y, z + 1).setUv(u + w, v + w).setColor(color.r, color.g, color.b, color.a);
-                buffer.addVertex(m, x + 1, y, z).setUv(u + w, v    ).setColor(color.r, color.g, color.b, color.a);
+                buffer.addVertex(m, x + 1, y, z    ).setUv(u + w, v    ).setColor(color.r, color.g, color.b, color.a);
                 break;
 
             case SOUTH:
@@ -543,11 +602,9 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         buffer.addVertex(x + offset1, y, z + offset1).setColor(color.r, color.g, color.b, color.a).setLineWidth(lineWidth);
     }
 
-    private boolean updateLightLevels(Level world, BlockPos center)
+    private void updateLightLevels(Level world, BlockPos center)
     {
-        this.lightInfos.clear();
-        this.lastInShapes = null;
-        this.lastOutShapes = null;
+        this.ignoreRange = false;
 
         //System.out.printf("LL center %s\n", center.toShortString());
 
@@ -568,25 +625,25 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
             if (ssFull || ssLimit)
             {
-                List<ShapeSpawnSphere> allSpawnSpheres = ShapeManager.INSTANCE.getAllShapes().stream()
+                List<ShapeSpawnSphere> spawnSpheres = ShapeManager.INSTANCE.getAllShapes().stream()
                         .filter(s -> s instanceof ShapeSpawnSphere && s.isEnabled())
                         .map(s -> (ShapeSpawnSphere) s)
-                        .toList();
-                List<ShapeSpawnSphere> spawnSpheres = allSpawnSpheres.stream()
                         .filter(s -> s.contains(center.getX(), center.getY(), center.getZ()))
                         .sorted(Comparator.<ShapeSpawnSphere>comparingDouble(s -> s.getMargin() + s.getRadius()).reversed())
                         .toList();
 
+                if (spawnSpheres.equals(lastSpawnSpheres) == false)
+                {
+                    this.lightInfos.clear();
+                    lastSpawnSpheres = spawnSpheres;
+                }
                 if (spawnSpheres.isEmpty() == false)
                 {
                     fullPredicate = (_, _, _) -> false;
 
                     if (ssFull)
                     {
-                        this.lastInShapes = spawnSpheres;
-                        this.lastOutShapes = allSpawnSpheres.stream()
-                                .filter(s -> spawnSpheres.contains(s) == false)
-                                .toList();
+                        this.ignoreRange = true;
                     }
 
                     if (spawnSpheres.size() == 1)
@@ -638,12 +695,12 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
             // default
             int radius = Configs.Generic.LIGHT_LEVEL_RANGE.getIntegerValue();
-            minX = center.getX() - radius;
-            minY = center.getY() - radius;
-            minZ = center.getZ() - radius;
-            maxX = center.getX() + radius;
-            maxY = center.getY() + radius;
-            maxZ = center.getZ() + radius;
+            minX = (center.getX() - radius) & ~15;
+            minY = Integer.MIN_VALUE;
+            minZ = (center.getZ() - radius) & ~15;
+            maxX = (center.getX() + radius) | 15;
+            maxY = Integer.MAX_VALUE;
+            maxZ = (center.getZ() + radius) | 15;
         }
 
         final int minCX = (minX >> 4);
@@ -664,12 +721,9 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
         for (int cx = minCX; cx <= maxCX; ++cx)
         {
-            final int startX = Math.max( cx << 4      , minX);
-            final int endX   = Math.min((cx << 4) + 15, maxX);
-
             for (int cz = minCZ; cz <= maxCZ; ++cz)
             {
-                if (chunkPredicate.test(cx, cz) == false)
+                if (this.lightInfos.contains(cx, cz) || chunkPredicate.test(cx, cz) == false)
                 {
                     continue;
                 }
@@ -680,11 +734,16 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                     continue;
                 }
 
+                final int startX = Math.max( cx << 4      , minX);
+                final int endX   = Math.min((cx << 4) + 15, maxX);
                 final int startZ = Math.max( cz << 4      , minZ);
                 final int endZ   = Math.min((cz << 4) + 15, maxZ);
                 final int startY = Math.max(Math.max(minY, world.getMinY()), additionalMinY.apply(cx, cz));
                 final int endY = Math.min(Math.min(maxY, WorldUtils.getHighestSectionYOffset(chunk) + 15 + 1), additionalMaxY.apply(cx, cz));
                 int checkedSectionY = 1; // anything but multiply of 16
+
+                LightLevelChunkInfo info = new LightLevelChunkInfo(cx, cz, world.getMinY());
+                lightInfos.put(cx, cz, info);
 
                 for (int y = startY; y <= endY; ++y)
                 {
@@ -722,14 +781,14 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                         // and sounds difficult to maintain.
                     }
 
-                    boolean full = fullPredicate.test(cx, cz, y);
+                    boolean partial = fullPredicate.test(cx, cz, y) == false;
 
-                    for (int x = startX; x <= endX; ++x)
+                    for (int z = startZ; z <= endZ; ++z)
                     {
-                        for (int z = startZ; z <= endZ; ++z)
+                        for (int x = startX; x <= endX; ++x)
                         {
                             mutablePos.set(x, y, z);
-                            if (full == false && posPredicate.test(mutablePos) == false)
+                            if (partial && posPredicate.test(mutablePos) == false)
                             {
                                 continue;
                             }
@@ -760,23 +819,21 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                             {
                                 int block = y < worldTopHeight ? lightingProvider.getLayerListener(LightLayer.BLOCK).getLightValue(mutablePos) : 0;
                                 int sky   = y < worldTopHeight ? lightingProvider.getLayerListener(LightLayer.SKY).getLightValue(mutablePos) : 15;
-                                double topY = state.getShape(chunk, mutablePos).max(Direction.Axis.Y);
+                                double topY = autoHeight ? state.getShape(chunk, mutablePos).max(Direction.Axis.Y) : 0;
 
                                 // Don't render the light level marker if it would be raised all the way to the next block space
-                                if (autoHeight == false || topY < 1)
+                                if (topY < 1)
                                 {
-                                    float posY = topY >= 0 ? y + (float) topY : y;
-                                    this.lightInfos.add(new LightLevelInfo(mutablePos.asLong(), posY, block, sky));
-                                    //y += 2; // if the spot is spawnable, that means the next spawnable spot can be the third block up
+                                    info.push(x, y, z, (float) Math.max(0, topY), block, sky);
                                 }
                             }
                         }
                     }
                 }
+
+                info.seal();
             }
         }
-
-        return this.lightInfos.isEmpty() == false;
     }
 
     private boolean canSpawnAtWrapper(int x, int y, int z, ChunkAccess chunk, Level world, boolean skipBlockCheck)
@@ -855,19 +912,97 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         return entityType.isBlockDangerous(state) == false;
     }
 
-    public static class LightLevelInfo
+    // eliminates ChunkPos instantiation
+    private static class ChunkLightInfoMap extends Long2ObjectOpenHashMap<LightLevelChunkInfo>
     {
-        public long pos;
-        public byte block;
-        public byte sky;
-        public float y;
+        private static final long MASK32 = ((1L << 32L) - 1L);
 
-        public LightLevelInfo(long pos, float y, int block, int sky)
+        public void put(int chunkX, int chunkZ, LightLevelChunkInfo info)
         {
-            this.pos = pos;
-            this.y = y;
-            this.block = (byte) block;
-            this.sky = (byte) sky;
+            long key = ((long) chunkX << 32L) | ((long) chunkZ & MASK32);
+            super.put(key, info);
+        }
+
+        public boolean contains(int chunkX, int chunkZ)
+        {
+            long key = ((long) chunkX << 32L) | ((long) chunkZ & MASK32);
+            return super.containsKey(key);
+        }
+
+        public void removeNeighbors(int chunkX, int chunkZ)
+        {
+            long keyLeft = (long) chunkX << 32L;
+            long key0 = keyLeft | ((long) (chunkZ - 1) & MASK32);
+            long key1 = keyLeft | ((long) (chunkZ    ) & MASK32);
+            long key2 = keyLeft | ((long) (chunkZ + 1) & MASK32);
+            super.remove(key0);
+            super.remove(key1);
+            super.remove(key2);
+            super.remove(key0 - (1L << 32L));
+            super.remove(key1 - (1L << 32L));
+            super.remove(key2 - (1L << 32L));
+            super.remove(key0 + (1L << 32L));
+            super.remove(key1 + (1L << 32L));
+            super.remove(key2 + (1L << 32L));
+        }
+    }
+
+    private class Timer
+    {
+        private int update, render, end;
+        private final short[] history = new short[16];
+        private int index = 0;
+        private int dist;
+
+        public void timeUpdate()
+        {
+            this.update = (int) (System.nanoTime() / 1000L);
+        }
+
+        public void timeRender()
+        {
+            this.render = (int) (System.nanoTime() / 1000L);
+        }
+
+        public void timeEnd()
+        {
+            this.end = (int) (System.nanoTime() / 1000L);
+            short score = (short) Math.clamp(this.end - this.render - 5000, 0, 20000);
+            this.history[this.index] = score;
+            if (++this.index >= 16)
+            {
+                this.index = 0;
+            }
+            this.dist = 0;
+        }
+
+        public int getMinDist()
+        {
+            if (this.dist > 0)
+            {
+                return this.dist;
+            }
+
+            int sum = 0;
+            for (int i = 0; i < 16; ++i)
+            {
+                sum += this.history[i];
+            }
+
+            this.dist = 1 + sum / 16 / 2500;
+            return this.dist;
+        }
+
+        @SuppressWarnings("unused")
+        public void debugLog()
+        {
+            System.out.printf("LL markers: %d, update time: %.3f ms, render time: %.3f ms, min dist: %d\n",
+                    OverlayRendererLightLevel.this.lightInfos.values().stream()
+                            .mapToInt(LightLevelChunkInfo::size).sum(),
+                    (double) (this.render - this.update) / 1000,
+                    (double) (this.end - this.render) / 1000,
+                    this.getMinDist()
+            );
         }
     }
 
