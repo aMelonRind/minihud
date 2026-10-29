@@ -817,15 +817,42 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         private int index = 0;
         private int dist;
 
+        private boolean wasUpdateWorkSplit = false;
+        private int accumulatedChunks, accumulatedUpdateStart, accumulatedUpdateTime;
+
         public void timeUpdate()
         {
             this.update = (int) (System.nanoTime() / 1000L);
             this.chunks = 0;
+
+            if (this.accumulatedChunks > 0 && this.wasUpdateWorkSplit == false)
+            {
+                this.accumulatedChunks = 0;
+                this.accumulatedUpdateTime = 0;
+            }
         }
 
         public void timeRender()
         {
             this.render = (int) (System.nanoTime() / 1000L);
+
+            if (this.chunks > 0)
+            {
+                if (this.wasUpdateWorkSplit || OverlayRendererLightLevel.this.needsDataUpdate)
+                {
+                    if (this.wasUpdateWorkSplit == false)
+                    {
+                        this.accumulatedUpdateStart = this.update;
+                    }
+                    this.accumulatedChunks += this.chunks;
+                    this.accumulatedUpdateTime += this.render - this.update;
+                    this.wasUpdateWorkSplit = OverlayRendererLightLevel.this.needsDataUpdate;
+                }
+            }
+            else
+            {
+                this.wasUpdateWorkSplit = false;
+            }
         }
 
         public void timeEnd()
@@ -879,6 +906,18 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                     (double) (this.end - this.render) / 1000,
                     this.getMinDist()
             );
+
+            if (this.accumulatedChunks > 0 && this.wasUpdateWorkSplit == false)
+            {
+                System.out.printf("LL finished %d chunk scanning in %.3f ms, %.3f ms spent on update\n",
+                        this.accumulatedChunks,
+                        (double) (this.render - this.accumulatedUpdateStart) / 1000,
+                        (double) this.accumulatedUpdateTime / 1000
+                );
+
+                this.accumulatedChunks = 0;
+                this.accumulatedUpdateTime = 0;
+            }
         }
     }
 
