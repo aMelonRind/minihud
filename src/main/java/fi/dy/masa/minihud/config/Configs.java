@@ -95,6 +95,7 @@ public class Configs implements IConfigHandler
         public static final ConfigBoolean       INVENTORY_PREVIEW_ENABLED           = new ConfigBoolean("inventoryPreviewEnabled", false).apply(GENERIC_KEY);
         public static final ConfigBoolean       INVENTORY_PREVIEW_VILLAGER_BG_COLOR = new ConfigBoolean("inventoryPreviewVillagerBGColor", false).apply(GENERIC_KEY);
         public static final ConfigBoolean       LIGHT_LEVEL_AGGRESSIVE_OPTIMIZATION = new ConfigBoolean("lightLevelAggressiveOptimization", false).apply(GENERIC_KEY);
+        public static final ConfigOptionList    LIGHT_LEVEL_ANIMATION               = new ConfigOptionList("lightLevelAnimation", LightLevelAnimation.NONE).apply(GENERIC_KEY);
         public static final ConfigBoolean       LIGHT_LEVEL_AUTO_HEIGHT             = new ConfigBoolean("lightLevelAutoHeight", false).apply(GENERIC_KEY);
         public static final ConfigBoolean       LIGHT_LEVEL_COLORED_NUMBERS         = new ConfigBoolean("lightLevelColoredNumbers", true).apply(GENERIC_KEY);
         public static final ConfigBoolean       LIGHT_LEVEL_COLLISION_CHECK         = new ConfigBoolean("lightLevelCollisionCheck", false).apply(GENERIC_KEY);
@@ -241,6 +242,7 @@ public class Configs implements IConfigHandler
                 SERVER_NBT_REQUEST_RATE,
 
                 BLOCK_GRID_OVERLAY_MODE,
+                LIGHT_LEVEL_ANIMATION,
                 LIGHT_LEVEL_MARKER_CONDITION,
                 LIGHT_LEVEL_MARKER_MODE,
                 LIGHT_LEVEL_NUMBER_CONDITION,

@@ -142,6 +142,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         }
 
         return this.needsUpdate ||
+                Configs.Generic.LIGHT_LEVEL_ANIMATION.getOptionListValue() != LightLevelAnimation.NONE ||
                 (Configs.Generic.LIGHT_LEVEL_NUMBER_ROTATION.getBooleanValue() &&
                         Configs.Generic.LIGHT_LEVEL_NUMBER_CONDITION.getOptionListValue() != LightLevelRenderCondition.NEVER &&
                         this.lastDirection != entity.getDirection());
@@ -419,6 +420,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         Color4f colorSkyLit = Configs.Colors.LIGHT_LEVEL_MARKER_SKY_LIT.getColor();
         Color4f colorDark = Configs.Colors.LIGHT_LEVEL_MARKER_DARK.getColor();
         LightLevelRenderCondition condition = (LightLevelRenderCondition) Configs.Generic.LIGHT_LEVEL_MARKER_CONDITION.getOptionListValue();
+        LightLevelAnimation animation = (LightLevelAnimation) Configs.Generic.LIGHT_LEVEL_ANIMATION.getOptionListValue();
         double markerSize = Configs.Generic.LIGHT_LEVEL_MARKER_SIZE.getDoubleValue();
         double offsetX = cameraPos.x;
         double offsetY = cameraPos.y - Configs.Generic.LIGHT_LEVEL_RENDER_OFFSET.getDoubleValue();
@@ -435,6 +437,8 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
         Predicate<Integer> blockLightPredicate = b -> condition.shouldRender(b, dimThreshold, safeThreshold);
         int totalVertices = 0;
+
+        double timeMs = (System.nanoTime() >>> 1L) / 500000.0;
 
         for (LightLevelChunkInfo chunk : this.lightInfos.values())
         {
@@ -467,6 +471,12 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                 else
                 {
                     color = colorDim;
+                }
+
+                if (animation != LightLevelAnimation.NONE)
+                {
+                    double dy = info.y - cameraPos.y;
+                    color = animation.apply(color, Math.sqrt(x * x + dy * dy + z * z), timeMs);
                 }
 
                 totalVertices += renderer.render((float) x, (float) y, (float) z, color, (float) offset1, (float) offset2, lineWidth, buffer);
