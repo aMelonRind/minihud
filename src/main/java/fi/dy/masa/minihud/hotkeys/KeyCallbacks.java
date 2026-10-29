@@ -87,10 +87,10 @@ public class KeyCallbacks
         Configs.Generic.LIGHT_LEVEL_NUMBER_OFFSET_SKY_Y.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false));
         Configs.Generic.LIGHT_LEVEL_NUMBER_ROTATION.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false));
         Configs.Generic.LIGHT_LEVEL_NUMBER_RANGE.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false));
-        Configs.Generic.LIGHT_LEVEL_RANGE.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false));
+        Configs.Generic.LIGHT_LEVEL_RANGE.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false, false));
         Configs.Generic.LIGHT_LEVEL_RENDER_OFFSET.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false));
-        Configs.Generic.LIGHT_LEVEL_RENDER_THROUGH.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false));
         Configs.Generic.LIGHT_LEVEL_SKIP_BLOCK_CHECK.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(true));
+        Configs.Generic.LIGHT_LEVEL_SLIME_MODE.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(true));
         Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_FULL.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(true));
         Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_LIMIT.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(true));
         Configs.Generic.LIGHT_LEVEL_THRESHOLD_DIM.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false));
@@ -106,8 +106,14 @@ public class KeyCallbacks
         Configs.Generic.STRUCTURES_RENDER_OUTLINES_WHITE.setValueChangeCallback((config) -> OverlayRendererStructures.INSTANCE.setNeedsUpdate());
 
         Configs.Generic.CONDUIT_RANGE_OVERLAY_RENDER_THROUGH.setValueChangeCallback((config) -> OverlayRendererConduitRange.INSTANCE.setRenderThrough(config.getBooleanValue()));
-        Configs.Generic.LIGHT_LEVEL_RENDER_THROUGH.setValueChangeCallback((config) -> OverlayRendererLightLevel.INSTANCE.setRenderThrough(config.getBooleanValue()));
-        Configs.Generic.SLIME_CHUNK_RENDER_THROUGH.setValueChangeCallback((config) -> OverlayRendererSlimeChunks.INSTANCE.setRenderThrough(config.getBooleanValue()));
+        Configs.Generic.LIGHT_LEVEL_RENDER_THROUGH.setValueChangeCallback((config) -> {
+            OverlayRendererLightLevel.INSTANCE.setRenderThrough(config.getBooleanValue());
+            OverlayRendererLightLevel.INSTANCE.markNeedsUpdate(false);
+        });
+        Configs.Generic.SLIME_CHUNK_RENDER_THROUGH.setValueChangeCallback((config) -> {
+            OverlayRendererSlimeChunks.INSTANCE.setRenderThrough(config.getBooleanValue());
+            OverlayRendererSlimeChunks.INSTANCE.setNeedsUpdate();
+        });
         Configs.Generic.STRUCTURES_RENDER_THROUGH.setValueChangeCallback((config) -> OverlayRendererStructures.INSTANCE.setRenderThrough(config.getBooleanValue()));
 
         RendererToggle.OVERLAY_SLIME_CHUNKS_OVERLAY.getKeybind().setCallback(new KeyCallbackAdjustable(RendererToggle.OVERLAY_SLIME_CHUNKS_OVERLAY, new KeyCallbackToggleBooleanConfigWithMessage(RendererToggle.OVERLAY_SLIME_CHUNKS_OVERLAY)));

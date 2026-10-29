@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
 import fi.dy.masa.minihud.renderer.OverlayRendererLightLevel;
+import fi.dy.masa.minihud.util.LightLevelPosLimiter;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.Direction;
 
@@ -24,6 +25,10 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
     protected Vec3d[] quadrantCenters;
     protected boolean useCornerQuadrants;
     protected double margin = 0.0;
+
+    private long cacheKey = -1;
+    private boolean mayIntersectCache;
+    private int minYCache, maxYCache, xzMaskCache;
 
     public ShapeSpawnSphere()
     {
@@ -53,6 +58,7 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
     {
         super.update(cameraPos, entity, mc, profiler);
 
+        this.cacheKey = -1;
         OverlayRendererLightLevel.INSTANCE.onSpawnSphereUpdate();
     }
 
@@ -63,6 +69,7 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
 
         if (this.isEnabled() == false)
         {
+            this.cacheKey = -1;
             OverlayRendererLightLevel.INSTANCE.onSpawnSphereUpdate();
         }
     }
@@ -151,8 +158,15 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
         return isPositionOnOrInsideRing(x, y, z, Direction.DOWN);
     }
 
-    private double getMinDistSqToChunk(int chunkX, int chunkZ)
+    private void updateCache(int chunkX, int chunkZ)
     {
+        long key = ((long) chunkX << 32L) | ((long) chunkZ & ((1L << 32L) - 1L));
+        if (this.cacheKey == key)
+        {
+            return;
+        }
+        this.cacheKey = key;
+
         final Vec3d effectiveCenter = this.getEffectiveCenter();
         double x = MathUtils.clamp(effectiveCenter.x, chunkX << 4, (chunkX << 4) + 16);
         double z = MathUtils.clamp(effectiveCenter.z, chunkZ << 4, (chunkZ << 4) + 16);
@@ -161,12 +175,32 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
         double centerZ = MathUtils.clamp(z, effectiveCenter.z - margin, effectiveCenter.z + margin);
         double distX = x - centerX;
         double distZ = z - centerZ;
-        return distX * distX + distZ * distZ;
+        double distXSq = distX * distX;
+        double distZSq = distZ * distZ;
+        double minDistSq = distXSq + distZSq;
+
+        double radiusSq = this.getSquaredRadius();
+        this.mayIntersectCache = minDistSq < radiusSq;
+
+        if (this.mayIntersectCache)
+        {
+            double r = Math.sqrt(Math.max(0, radiusSq - minDistSq));
+            this.minYCache = (int) Math.floor(effectiveCenter.y - r);
+            this.maxYCache = (int) Math.ceil(effectiveCenter.y + r);
+            double xr = Math.sqrt(Math.max(0, radiusSq - distZSq));
+            int minX = (int) Math.floor(centerX - xr);
+            int maxX = (int) Math.ceil(centerX + xr);
+            double zr = Math.sqrt(Math.max(0, radiusSq - distXSq));
+            int minZ = (int) Math.floor(centerZ - zr);
+            int maxZ = (int) Math.ceil(centerZ + zr);
+            this.xzMaskCache = LightLevelPosLimiter.createXZMask(chunkX, chunkZ, minX, minZ, maxX, maxZ);
+        }
     }
 
     public boolean mayIntersectWithChunk(int chunkX, int chunkZ)
     {
-        return this.getMinDistSqToChunk(chunkX, chunkZ) < this.getSquaredRadius();
+        this.updateCache(chunkX, chunkZ);
+        return this.mayIntersectCache;
     }
 
     // I'm not sure if this is accurate if useCornerQuadrants is true.
@@ -183,14 +217,20 @@ public class ShapeSpawnSphere extends ShapeSphereBlocky
 
     public int getChunkIntersectMinY(int chunkX, int chunkZ)
     {
-        double r = Math.sqrt(Math.max(0, this.getSquaredRadius() - this.getMinDistSqToChunk(chunkX, chunkZ)));
-        return (int) Math.floor(this.getEffectiveCenter().y - r) - 1;
+        this.updateCache(chunkX, chunkZ);
+        return this.minYCache;
     }
 
     public int getChunkIntersectMaxY(int chunkX, int chunkZ)
     {
-        double r = Math.sqrt(Math.max(0, this.getSquaredRadius() - this.getMinDistSqToChunk(chunkX, chunkZ)));
-        return (int) Math.ceil(this.getEffectiveCenter().y + r) + 1;
+        this.updateCache(chunkX, chunkZ);
+        return this.maxYCache;
+    }
+
+    public int getChunkIntersectXZMask(int chunkX, int chunkZ)
+    {
+        this.updateCache(chunkX, chunkZ);
+        return this.xzMaskCache;
     }
 
     @Override

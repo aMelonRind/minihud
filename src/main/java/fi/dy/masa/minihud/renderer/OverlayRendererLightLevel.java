@@ -1,16 +1,13 @@
 package fi.dy.masa.minihud.renderer;
 
 import java.util.*;
-import java.util.function.BiFunction;
-import java.util.function.BiPredicate;
 import java.util.function.Predicate;
 
-import com.google.common.base.Predicates;
-import fi.dy.masa.minihud.util.LightLevelChunkInfo;
-import fi.dy.masa.minihud.util.LightLevelInfo;
+import fi.dy.masa.minihud.mixin.render.IMixinByteBufferBuilder;
+import fi.dy.masa.minihud.mixin.render.IMixinRenderObjectVbo;
+import fi.dy.masa.minihud.util.*;
 import fi.dy.masa.minihud.renderer.shapes.ShapeManager;
 import fi.dy.masa.minihud.renderer.shapes.ShapeSpawnSphere;
-import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.world.level.*;
 import org.joml.Matrix4f;
 
@@ -31,7 +28,6 @@ import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunk;
-import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 import net.minecraft.world.level.material.FluidState;
 
@@ -41,7 +37,6 @@ import fi.dy.masa.malilib.gui.Message;
 import fi.dy.masa.malilib.render.MaLiLibPipelines;
 import fi.dy.masa.malilib.render.texture.MaLiLibComplexBinding;
 import fi.dy.masa.malilib.util.InfoUtils;
-import fi.dy.masa.malilib.util.WorldUtils;
 import fi.dy.masa.malilib.util.data.Color4f;
 import fi.dy.masa.malilib.util.position.PositionUtils;
 import fi.dy.masa.malilib.util.position.Vec3d;
@@ -49,9 +44,6 @@ import fi.dy.masa.minihud.MiniHUD;
 import fi.dy.masa.minihud.Reference;
 import fi.dy.masa.minihud.config.Configs;
 import fi.dy.masa.minihud.config.RendererToggle;
-import fi.dy.masa.minihud.util.LightLevelMarkerMode;
-import fi.dy.masa.minihud.util.LightLevelNumberMode;
-import fi.dy.masa.minihud.util.LightLevelRenderCondition;
 
 public class OverlayRendererLightLevel extends OverlayRendererBase
 {
@@ -59,10 +51,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
     private static final Identifier TEXTURE_NUMBERS = Identifier.fromNamespaceAndPath(Reference.MOD_ID, "textures/misc/light_level_numbers.png");
 
     private final Timer timer;
-    private final ChunkLightInfoMap lightInfos;
+    private final LightLevelChunkInfo.Map lightInfos;
     private BlockPos.MutableBlockPos mutablePos;
     private Direction lastDirection;
-    private List<ShapeSpawnSphere> lastSpawnSpheres;
+    private LightLevelPosProvider lastProvider;
 
     private boolean ignoreRange;
     private boolean tagsBroken;
@@ -75,7 +67,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
     protected OverlayRendererLightLevel()
     {
         this.timer = new Timer();
-        this.lightInfos = new ChunkLightInfoMap();
+        this.lightInfos = new LightLevelChunkInfo.Map();
         this.mutablePos = new BlockPos.MutableBlockPos();
         this.lastDirection = Direction.NORTH;
         this.needsDataUpdate = true;
@@ -89,10 +81,19 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
     public void markNeedsUpdate(boolean clearData)
     {
+        this.markNeedsUpdate(clearData, clearData == false);
+    }
+
+    public void markNeedsUpdate(boolean clearData, boolean renderOnly)
+    {
         if (clearData)
         {
             this.needsDataUpdate = true;
             this.lightInfos.clear();
+        }
+        else if (renderOnly == false)
+        {
+            this.needsDataUpdate = true;
         }
 
         this.needsUpdate = true;
@@ -149,9 +150,9 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
     @Override
     public void update(Vec3d cameraPos, Entity entity, Minecraft mc, ProfilerFiller profiler)
     {
+        this.needsUpdate = false;
         if (mc.level == null)
         {
-            this.needsUpdate = false;
             this.needsDataUpdate = false;
             return;
         }
@@ -160,6 +161,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         BlockPos pos = PositionUtils.getEntityBlockPos(entity);
         if (this.needsDataUpdate)
         {
+            this.needsDataUpdate = false;
             this.updateLightLevels(mc.level, pos);
         }
         this.renderThrough = Configs.Generic.LIGHT_LEVEL_RENDER_THROUGH.getBooleanValue();
@@ -171,12 +173,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         }
 
         this.timer.timeEnd();
-        this.timer.debugLog();
+//        this.timer.debugLog();
 
         this.lastUpdatePos = pos;
         this.lastDirection = entity.getDirection();
-        this.needsUpdate = false;
-        this.needsDataUpdate = false;
     }
 
     @Override
@@ -305,8 +305,21 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         int dimThreshold = Configs.Generic.LIGHT_LEVEL_THRESHOLD_DIM.getIntegerValue();
 
         RenderObjectVbo ctx = this.renderObjects.get(1);
-        // According to spark, could save ~10% cpu time by having a way to set initial ByteBufferBuilder capacity.
         BufferBuilder builder = ctx.start(() -> "minihud:light_level/outlines", this.renderThrough ? MaLiLibPipelines.DEBUG_LINES_MASA_SIMPLE_NO_DEPTH_NO_CULL : MaLiLibPipelines.DEBUG_LINES_MASA_SIMPLE_LEQUAL_DEPTH, 0);
+        // According to spark, this saves ~10% cpu time by setting initial ByteBufferBuilder capacity.
+        // If anything breaks, this can be safely commented out from here to ensureCapacity.
+        Predicate<Integer> blockLightCondition = b -> condition.shouldRender(b, dimThreshold, safeThreshold);
+        int marks = this.ignoreRange
+                ? this.lightInfos.countAllMarks(blockLightCondition)
+                : this.lightInfos.countMarks(cameraPos, Configs.Generic.LIGHT_LEVEL_RANGE.getIntegerValue(), blockLightCondition);
+        int vertexPerMark = markerMode == LightLevelMarkerMode.SQUARE ? 8 : 4;
+        // vertices limits at 16777215, see BufferBuilder#beginVertex
+        // These shouldn't be critical if any of these value changed in the future. Except some wasted memory.
+        int vertexCount = Math.min(marks * vertexPerMark, 16777215);
+        int bufferSize = vertexCount * ctx.getSelectedVertexFormat().getVertexSize();
+        //noinspection resource
+        ((IMixinByteBufferBuilder) ((IMixinRenderObjectVbo) ctx).minihud_getAlloc()).minihud_ensureCapacity(bufferSize);
+
 
         if (markerMode == LightLevelMarkerMode.SQUARE)
         {
@@ -344,6 +357,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         this.mutablePos = new BlockPos.MutableBlockPos();
         this.lastDirection = Direction.NORTH;
         this.needsDataUpdate = true;
+        this.lastProvider = null;
     }
 
     @SuppressWarnings({"EnhancedSwitchMigration", "DuplicateBranchesInSwitch"})
@@ -414,8 +428,13 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         Color4f color;
         int range = this.ignoreRange ? Integer.MAX_VALUE : Configs.Generic.LIGHT_LEVEL_RANGE.getIntegerValue();
         int minY = this.ignoreRange ? Integer.MIN_VALUE : (int) Math.floor(offsetY - range);
+        int minX = (int) Math.floor(offsetX - range);
+        int minZ = (int) Math.floor(offsetZ - range);
+        int maxX = (int) Math.ceil(offsetX + range);
+        int maxZ = (int) Math.ceil(offsetZ + range);
 
         Predicate<Integer> blockLightPredicate = b -> condition.shouldRender(b, dimThreshold, safeThreshold);
+        int totalVertices = 0;
 
         for (LightLevelChunkInfo chunk : this.lightInfos.values())
         {
@@ -424,27 +443,17 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                 continue;
             }
 
-            boolean checkXZ = this.ignoreRange == false &&
-                   (chunk.x < offsetX - range ||
-                    chunk.x + 16 > offsetX + range ||
-                    chunk.z < offsetZ - range ||
-                    chunk.z + 16 > offsetZ + range);
-            if (checkXZ && (
-                    chunk.x > offsetX + range ||
-                    chunk.x + 16 < offsetX - range ||
-                    chunk.z > offsetZ + range ||
-                    chunk.z + 16 < offsetZ - range))
-            {
-                continue;
-            }
-            for (LightLevelInfo info : chunk.iterable(minY, blockLightPredicate))
+            int xzMask = this.ignoreRange ? 0 :
+                    LightLevelPosLimiter.createXZMask(chunk.x >> 4, chunk.z >> 4, minX, minZ, maxX, maxZ);
+
+            for (LightLevelInfo info : chunk.iterable(minY, xzMask, blockLightPredicate))
             {
                 double x = info.x - offsetX;
                 double y = info.y - offsetY;
                 double z = info.z - offsetZ;
-                if (checkXZ && (Math.abs(x) > range || Math.abs(z) > range) || y > range)
+                if (y > range)
                 {
-                    continue;
+                    break;
                 }
 
                 if (info.block < safeThreshold)
@@ -460,7 +469,12 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                     color = colorDim;
                 }
 
-                renderer.render((float) x, (float) y, (float) z, color, (float) offset1, (float) offset2, lineWidth, buffer);
+                totalVertices += renderer.render((float) x, (float) y, (float) z, color, (float) offset1, (float) offset2, lineWidth, buffer);
+                // vertices limits at 16777215, see BufferBuilder#beginVertex
+                if (totalVertices > 16777200)
+                {
+                    return;
+                }
             }
         }
     }
@@ -480,6 +494,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         Color4f color;
         int range = Configs.Generic.LIGHT_LEVEL_NUMBER_RANGE.getIntegerValue();
         int minY = (int) Math.floor(dy - range);
+        int minX = (int) Math.floor(dx - range);
+        int minZ = (int) Math.floor(dz - range);
+        int maxX = (int) Math.ceil(dx + range);
+        int maxZ = (int) Math.ceil(dz + range);
 
         Predicate<Integer> blockLightPredicate = b -> condition.shouldRender(b, dimThreshold, safeThreshold);
 
@@ -490,27 +508,18 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                 continue;
             }
 
-            boolean checkXZ = chunk.x < dx - range ||
-                    chunk.x + 16 > dx + range ||
-                    chunk.z < dz - range ||
-                    chunk.z + 16 > dz + range;
-            if (checkXZ && (
-                    chunk.x > dx + range ||
-                    chunk.x + 16 < dx - range ||
-                    chunk.z > dz + range ||
-                    chunk.z + 16 < dz - range))
-            {
-                continue;
-            }
-            for (LightLevelInfo info : chunk.iterable(minY, blockLightPredicate))
+            int xzMask = LightLevelPosLimiter.createXZMask(chunk.x >> 4, chunk.z >> 4, minX, minZ, maxX, maxZ);
+
+            for (LightLevelInfo info : chunk.iterable(minY, xzMask, blockLightPredicate))
             {
                 double x = info.x - dx;
                 double y = info.y - dy;
                 double z = info.z - dz;
-                if (checkXZ && (Math.abs(x) > range || Math.abs(z) > range) || y > range)
+                if (y > range)
                 {
-                    continue;
+                    break;
                 }
+
                 int lightLevel = numberMode == LightLevelNumberMode.BLOCK ? info.block : info.sky;
 
                 if (lightLevel < safeThreshold)
@@ -574,7 +583,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         }
     }
 
-    private void renderLightLevelCross(float x, float y, float z, Color4f color, float offset1, float offset2, float lineWidth, BufferBuilder buffer)
+    private int renderLightLevelCross(float x, float y, float z, Color4f color, float offset1, float offset2, float lineWidth, BufferBuilder buffer)
     {
         y += 0.005F;
 
@@ -583,9 +592,11 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
         buffer.addVertex(x + offset1, y, z + offset2).setColor(color.r, color.g, color.b, color.a).setLineWidth(lineWidth);
         buffer.addVertex(x + offset2, y, z + offset1).setColor(color.r, color.g, color.b, color.a).setLineWidth(lineWidth);
+
+        return 4;
     }
 
-    private void renderLightLevelSquare(float x, float y, float z, Color4f color, float offset1, float offset2, float lineWidth, BufferBuilder buffer)
+    private int renderLightLevelSquare(float x, float y, float z, Color4f color, float offset1, float offset2, float lineWidth, BufferBuilder buffer)
     {
         y += 0.005F;
 
@@ -600,240 +611,115 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
         buffer.addVertex(x + offset2, y, z + offset1).setColor(color.r, color.g, color.b, color.a).setLineWidth(lineWidth);
         buffer.addVertex(x + offset1, y, z + offset1).setColor(color.r, color.g, color.b, color.a).setLineWidth(lineWidth);
+
+        return 8;
     }
 
     private void updateLightLevels(Level world, BlockPos center)
     {
-        this.ignoreRange = false;
-
         //System.out.printf("LL center %s\n", center.toShortString());
 
-        final boolean aggressiveOpt = Configs.Generic.LIGHT_LEVEL_AGGRESSIVE_OPTIMIZATION.getBooleanValue();
-
-        final int minX, minY, minZ, maxX, maxY, maxZ;
-        BiPredicate<Integer, Integer> chunkPredicate = (_, _) -> true;
-        BiFunction<Integer, Integer, Integer> additionalMinY = (_, _) -> Integer.MIN_VALUE;
-        BiFunction<Integer, Integer, Integer> additionalMaxY = (_, _) -> Integer.MAX_VALUE;
-        // decides if posPredicate can be skipped.
-        IChunkLayerPredicate fullPredicate = (_, _, _) -> true;
-        // expects getting called after chunkPredicate.
-        Predicate<BlockPos> posPredicate = Predicates.alwaysTrue();
-        configure:
-        {
-            final boolean ssFull = Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_FULL.getBooleanValue();
-            final boolean ssLimit = Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_LIMIT.getBooleanValue();
-
-            if (ssFull || ssLimit)
-            {
-                List<ShapeSpawnSphere> spawnSpheres = ShapeManager.INSTANCE.getAllShapes().stream()
-                        .filter(s -> s instanceof ShapeSpawnSphere && s.isEnabled())
-                        .map(s -> (ShapeSpawnSphere) s)
-                        .filter(s -> s.contains(center.getX(), center.getY(), center.getZ()))
-                        .sorted(Comparator.<ShapeSpawnSphere>comparingDouble(s -> s.getMargin() + s.getRadius()).reversed())
-                        .toList();
-
-                if (spawnSpheres.equals(lastSpawnSpheres) == false)
-                {
-                    this.lightInfos.clear();
-                    lastSpawnSpheres = spawnSpheres;
-                }
-                if (spawnSpheres.isEmpty() == false)
-                {
-                    fullPredicate = (_, _, _) -> false;
-
-                    if (ssFull)
-                    {
-                        this.ignoreRange = true;
-                    }
-
-                    if (spawnSpheres.size() == 1)
-                    {
-                        ShapeSpawnSphere ss = spawnSpheres.getFirst();
-                        chunkPredicate = ss::mayIntersectWithChunk;
-                        additionalMinY = ss::getChunkIntersectMinY;
-                        additionalMaxY = ss::getChunkIntersectMaxY;
-                        if (aggressiveOpt)
-                        {
-                            fullPredicate = ss::containsChunkLayer;
-                        }
-                        posPredicate = pos -> ss.contains(pos.getX(), pos.getY(), pos.getZ());
-                    }
-                    else
-                    {
-                        List<ShapeSpawnSphere> filteredSpawnSpheres = new ArrayList<>();
-                        chunkPredicate = (cx, cz) -> {
-                            filteredSpawnSpheres.clear();
-                            filteredSpawnSpheres.addAll(spawnSpheres.stream()
-                                    .filter(s -> s.mayIntersectWithChunk(cx, cz)).toList());
-                            return filteredSpawnSpheres.isEmpty() == false;
-                        };
-                        if (aggressiveOpt)
-                        {
-                            fullPredicate = (cx, cz, y) -> filteredSpawnSpheres.stream()
-                                    .anyMatch(s -> s.containsChunkLayer(cx, cz, y));
-                        }
-                        posPredicate = pos -> filteredSpawnSpheres.stream()
-                                .anyMatch(s -> s.contains(pos.getX(), pos.getY(), pos.getZ()));
-                        additionalMinY = (cx, cz) -> spawnSpheres.stream()
-                                .mapToInt(s -> s.getChunkIntersectMinY(cx, cz)).min().getAsInt();
-                        additionalMaxY = (cx, cz) -> spawnSpheres.stream()
-                                .mapToInt(s -> s.getChunkIntersectMaxY(cx, cz)).min().getAsInt();
-                    }
-
-                    if (ssFull)
-                    {
-                        minX = spawnSpheres.stream().mapToInt(s -> (int) Math.floor(s.getEffectiveCenter().x - s.getMargin() - s.getRadius())).min().getAsInt();
-                        minY = spawnSpheres.stream().mapToInt(s -> (int) Math.floor(s.getEffectiveCenter().y                 - s.getRadius())).min().getAsInt();
-                        minZ = spawnSpheres.stream().mapToInt(s -> (int) Math.floor(s.getEffectiveCenter().z - s.getMargin() - s.getRadius())).min().getAsInt();
-                        maxX = spawnSpheres.stream().mapToInt(s -> (int) Math.ceil(s.getEffectiveCenter().x + s.getMargin() + s.getRadius())).max().getAsInt();
-                        maxY = spawnSpheres.stream().mapToInt(s -> (int) Math.ceil(s.getEffectiveCenter().y                 + s.getRadius())).max().getAsInt();
-                        maxZ = spawnSpheres.stream().mapToInt(s -> (int) Math.ceil(s.getEffectiveCenter().z + s.getMargin() + s.getRadius())).max().getAsInt();
-                        break configure;
-                    }
-                }
-            }
-
-            // default
-            int radius = Configs.Generic.LIGHT_LEVEL_RANGE.getIntegerValue();
-            minX = (center.getX() - radius) & ~15;
-            minY = Integer.MIN_VALUE;
-            minZ = (center.getZ() - radius) & ~15;
-            maxX = (center.getX() + radius) | 15;
-            maxY = Integer.MAX_VALUE;
-            maxZ = (center.getZ() + radius) | 15;
-        }
-
-        final int minCX = (minX >> 4);
-        final int minCZ = (minZ >> 4);
-        final int maxCX = (maxX >> 4);
-        final int maxCZ = (maxZ >> 4);
-        LevelLightEngine lightingProvider = world.getChunkSource().getLightEngine();
-        BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
-        final int worldTopHeight = world.getMaxY() + 1;
         final boolean collisionCheck = Configs.Generic.LIGHT_LEVEL_COLLISION_CHECK.getBooleanValue();
         final boolean underWater = Configs.Generic.LIGHT_LEVEL_UNDER_WATER.getBooleanValue();
         final boolean autoHeight = Configs.Generic.LIGHT_LEVEL_AUTO_HEIGHT.getBooleanValue();
         final boolean skipBlockCheck = Configs.Generic.LIGHT_LEVEL_SKIP_BLOCK_CHECK.getBooleanValue();
+        final boolean ssFull = Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_FULL.getBooleanValue();
+        final boolean ssLimit = Configs.Generic.LIGHT_LEVEL_SPAWN_SPHERE_LIMIT.getBooleanValue();
+        final boolean slimeMode = Configs.Generic.LIGHT_LEVEL_SLIME_MODE.getBooleanValue();
+        final boolean aggressiveOpt = Configs.Generic.LIGHT_LEVEL_AGGRESSIVE_OPTIMIZATION.getBooleanValue();
+        final int cx = center.getX();
+        final int cy = center.getY();
+        final int cz = center.getZ();
+        final int worldTopHeight = world.getMaxY() + 1;
+        LevelLightEngine lightingProvider = world.getChunkSource().getLightEngine();
 
         this.underWater = underWater;
 
-        BlockState lastSkip = null;
+        List<ShapeSpawnSphere> spawnSpheres = ssFull || ssLimit ? ShapeManager.INSTANCE.getAllShapes().stream()
+                .filter(s -> s instanceof ShapeSpawnSphere && s.isEnabled())
+                .map(s -> (ShapeSpawnSphere) s)
+                .filter(s -> s.contains(cx, cy, cz))
+                .sorted(Comparator.<ShapeSpawnSphere>comparingDouble(s -> s.getMargin() + s.getRadius()).reversed())
+                .toList() : null;
 
-        for (int cx = minCX; cx <= maxCX; ++cx)
+        // put heavier limiter last
+        LightLevelPosLimiter.List limiters = new LightLevelPosLimiter.List(this.lightInfos::contains);
+        if (slimeMode)
         {
-            for (int cz = minCZ; cz <= maxCZ; ++cz)
-            {
-                if (this.lightInfos.contains(cx, cz) || chunkPredicate.test(cx, cz) == false)
-                {
-                    continue;
-                }
-
-                LevelChunk chunk = world.getChunk(cx, cz);
-                if (chunk.isEmpty())
-                {
-                    continue;
-                }
-
-                final int startX = Math.max( cx << 4      , minX);
-                final int endX   = Math.min((cx << 4) + 15, maxX);
-                final int startZ = Math.max( cz << 4      , minZ);
-                final int endZ   = Math.min((cz << 4) + 15, maxZ);
-                final int startY = Math.max(Math.max(minY, world.getMinY()), additionalMinY.apply(cx, cz));
-                final int endY = Math.min(Math.min(maxY, WorldUtils.getHighestSectionYOffset(chunk) + 15 + 1), additionalMaxY.apply(cx, cz));
-                int checkedSectionY = 1; // anything but multiply of 16
-
-                LightLevelChunkInfo info = new LightLevelChunkInfo(cx, cz, world.getMinY());
-                lightInfos.put(cx, cz, info);
-
-                for (int y = startY; y <= endY; ++y)
-                {
-                    if (y > startY)
-                    {
-                        // If there are no blocks in the section below this layer, then we can skip it
-                        LevelChunkSection section = chunk.getSection(chunk.getSectionIndex(y - 1));
-
-                        if (section.hasOnlyAir())
-                        {
-                            //y += 16 - (y & 0xF);
-                            // jump to the next section if y - 1 is the same section.
-                            // essentially Math.ceil(y / 16.0) * 16.
-                            // the code above fails when y & 0xF == 0.
-                            y = ((y - 1) | 0xF) + 1;
-                            continue;
-                        }
-                    }
-
-                    if (aggressiveOpt && checkedSectionY != (y & ~0xF))
-                    {
-                        checkedSectionY = y & ~0xF;
-                        LevelChunkSection section = chunk.getSection(chunk.getSectionIndex(y));
-                        // fake pos, may cause inaccurate result.
-                        mutablePos.set(cx << 4, checkedSectionY, cz << 4);
-                        // If there are all conductors (blocks spawning), then we can skip it
-                        boolean hasNonConductor = section.getStates().maybeHas(s -> s.isRedstoneConductor(world, mutablePos) == false);
-                        if (hasNonConductor == false)
-                        {
-                            y |= 0xF;
-                            continue;
-                        }
-                        // according to spark profiler, analyzing palette and directly iterate IntList
-                        // might optimize another 25%. but it needs mixin to get raw palette and IntList,
-                        // and sounds difficult to maintain.
-                    }
-
-                    boolean partial = fullPredicate.test(cx, cz, y) == false;
-
-                    for (int z = startZ; z <= endZ; ++z)
-                    {
-                        for (int x = startX; x <= endX; ++x)
-                        {
-                            mutablePos.set(x, y, z);
-                            if (partial && posPredicate.test(mutablePos) == false)
-                            {
-                                continue;
-                            }
-
-                            BlockState state = chunk.getBlockState(mutablePos);
-                            if (aggressiveOpt)
-                            {
-                                // compares with state at another pos, may cause inaccurate result.
-                                if (lastSkip == state)
-                                {
-                                    continue;
-                                }
-
-                                if (state.isRedstoneConductor(world, mutablePos))
-                                {
-                                    lastSkip = state;
-                                    continue;
-                                }
-                            }
-
-                            if (this.canSpawnAtWrapper(x, y, z, chunk, world, skipBlockCheck) == false)
-                            {
-                                continue;
-                            }
-
-                            if ((collisionCheck == false || state.getCollisionShape(chunk, mutablePos).isEmpty()) &&
-                                (underWater || state.getFluidState().isEmpty()))
-                            {
-                                int block = y < worldTopHeight ? lightingProvider.getLayerListener(LightLayer.BLOCK).getLightValue(mutablePos) : 0;
-                                int sky   = y < worldTopHeight ? lightingProvider.getLayerListener(LightLayer.SKY).getLightValue(mutablePos) : 15;
-                                double topY = autoHeight ? state.getShape(chunk, mutablePos).max(Direction.Axis.Y) : 0;
-
-                                // Don't render the light level marker if it would be raised all the way to the next block space
-                                if (topY < 1)
-                                {
-                                    info.push(x, y, z, (float) Math.max(0, topY), block, sky);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                info.seal();
-            }
+            limiters.add(new LightLevelPosLimiter.SlimeChunk(world, cx, cy, cz, aggressiveOpt));
         }
+        if (spawnSpheres != null && spawnSpheres.isEmpty() == false)
+        {
+            limiters.add(new LightLevelPosLimiter.SpawnSphere(cx, cy, cz, aggressiveOpt, spawnSpheres));
+        }
+
+        LightLevelPosIterator iterator = aggressiveOpt
+                ? LightLevelPosIterator.PALETTE_LOOKUP
+                : LightLevelPosIterator.DEFAULT;
+        LightLevelPosProvider provider = ssFull && spawnSpheres.isEmpty() == false
+                ? new LightLevelPosProvider.SpawnSphere(cx, cy, cz, aggressiveOpt, spawnSpheres, limiters, iterator)
+                : new LightLevelPosProvider.Default(cx, cy, cz, aggressiveOpt, limiters, iterator);
+
+        if (provider.isSame(this.lastProvider) == false)
+        {
+            this.lightInfos.clear();
+        }
+        this.lastProvider = provider;
+        this.ignoreRange = provider.ignoreRange();
+
+        provider.generate(world, underWater, (chunkX, chunkZ, chunkIterator) ->
+        {
+            LevelChunk chunk = world.getChunk(chunkX, chunkZ);
+            if (chunk.isEmpty())
+            {
+                return;
+            }
+
+            if (this.timer.shouldProcessNextChunk() == false)
+            {
+                this.needsDataUpdate = true;
+                provider.stop();
+                return;
+            }
+
+            LightLevelChunkInfo info = new LightLevelChunkInfo(chunkX, chunkZ, world.getMinY());
+            this.lightInfos.put(chunkX, chunkZ, info);
+
+            chunkIterator.accept(chunk, (x, y, z, pos, state) ->
+            {
+                if (this.canSpawnAtWrapper(x, y, z, chunk, world, skipBlockCheck) == false)
+                {
+                    return;
+                }
+
+                if ((collisionCheck == false || state.getCollisionShape(chunk, pos).isEmpty()) &&
+                        (underWater || state.getFluidState().isEmpty()))
+                {
+                    int block = 0;
+                    int sky = 15;
+                    double topY = autoHeight ? state.getShape(chunk, pos).max(Direction.Axis.Y) : 0;
+
+                    if (slimeMode)
+                    {
+                        sky = 0;
+                    }
+                    else if (y < worldTopHeight)
+                    {
+                        block = lightingProvider.getLayerListener(LightLayer.BLOCK).getLightValue(pos);
+                        sky = lightingProvider.getLayerListener(LightLayer.SKY).getLightValue(pos);
+                    }
+
+                    // Don't render the light level marker if it would be raised all the way to the next block space
+                    if (topY < 1)
+                    {
+                        info.push(x, y, z, (float) Math.max(0, topY), block, sky);
+                    }
+                }
+            });
+
+            info.seal();
+            this.timer.processedChunk();
+        });
     }
 
     private boolean canSpawnAtWrapper(int x, int y, int z, ChunkAccess chunk, Level world, boolean skipBlockCheck)
@@ -912,44 +798,11 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         return entityType.isBlockDangerous(state) == false;
     }
 
-    // eliminates ChunkPos instantiation
-    private static class ChunkLightInfoMap extends Long2ObjectOpenHashMap<LightLevelChunkInfo>
-    {
-        private static final long MASK32 = ((1L << 32L) - 1L);
-
-        public void put(int chunkX, int chunkZ, LightLevelChunkInfo info)
-        {
-            long key = ((long) chunkX << 32L) | ((long) chunkZ & MASK32);
-            super.put(key, info);
-        }
-
-        public boolean contains(int chunkX, int chunkZ)
-        {
-            long key = ((long) chunkX << 32L) | ((long) chunkZ & MASK32);
-            return super.containsKey(key);
-        }
-
-        public void removeNeighbors(int chunkX, int chunkZ)
-        {
-            long keyLeft = (long) chunkX << 32L;
-            long key0 = keyLeft | ((long) (chunkZ - 1) & MASK32);
-            long key1 = keyLeft | ((long) (chunkZ    ) & MASK32);
-            long key2 = keyLeft | ((long) (chunkZ + 1) & MASK32);
-            super.remove(key0);
-            super.remove(key1);
-            super.remove(key2);
-            super.remove(key0 - (1L << 32L));
-            super.remove(key1 - (1L << 32L));
-            super.remove(key2 - (1L << 32L));
-            super.remove(key0 + (1L << 32L));
-            super.remove(key1 + (1L << 32L));
-            super.remove(key2 + (1L << 32L));
-        }
-    }
-
     private class Timer
     {
+        private static final int MAX_SCAN_MICROS = 15000;
         private int update, render, end;
+        private int chunks;
         private final short[] history = new short[16];
         private int index = 0;
         private int dist;
@@ -957,6 +810,7 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         public void timeUpdate()
         {
             this.update = (int) (System.nanoTime() / 1000L);
+            this.chunks = 0;
         }
 
         public void timeRender()
@@ -974,6 +828,17 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
                 this.index = 0;
             }
             this.dist = 0;
+        }
+
+        public void processedChunk()
+        {
+            this.chunks++;
+        }
+
+        public boolean shouldProcessNextChunk()
+        {
+            return this.chunks == 0 ||
+                    ((int) (System.nanoTime() / 1000L) - this.update) / this.chunks * (this.chunks + 1) < MAX_SCAN_MICROS;
         }
 
         public int getMinDist()
@@ -996,9 +861,10 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
         @SuppressWarnings("unused")
         public void debugLog()
         {
-            System.out.printf("LL markers: %d, update time: %.3f ms, render time: %.3f ms, min dist: %d\n",
+            System.out.printf("LL markers: %d, updated %d chunks in %.3f ms, rendered in %.3f ms, min dist: %d\n",
                     OverlayRendererLightLevel.this.lightInfos.values().stream()
                             .mapToInt(LightLevelChunkInfo::size).sum(),
+                    this.chunks,
                     (double) (this.render - this.update) / 1000,
                     (double) (this.end - this.render) / 1000,
                     this.getMinDist()
@@ -1008,11 +874,9 @@ public class OverlayRendererLightLevel extends OverlayRendererBase
 
     private interface IMarkerRenderer
     {
-        void render(float x, float y, float z, Color4f color, float offset1, float offset2, float lineWidth, BufferBuilder buffer);
-    }
-
-    private interface IChunkLayerPredicate
-    {
-        boolean test(int chunkX, int chunkZ, int y);
+        /**
+         * @return vertex count
+         */
+        int render(float x, float y, float z, Color4f color, float offset1, float offset2, float lineWidth, BufferBuilder buffer);
     }
 }

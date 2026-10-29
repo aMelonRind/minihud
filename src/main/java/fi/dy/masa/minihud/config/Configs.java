@@ -113,6 +113,7 @@ public class Configs implements IConfigHandler
         public static final ConfigDouble        LIGHT_LEVEL_RENDER_OFFSET           = new ConfigDouble("lightLevelRenderOffset", 0.005, 0.0, 1.0).apply(GENERIC_KEY);
         public static final ConfigBoolean       LIGHT_LEVEL_RENDER_THROUGH          = new ConfigBoolean("lightLevelRenderThrough", false).apply(GENERIC_KEY);
         public static final ConfigBoolean       LIGHT_LEVEL_SKIP_BLOCK_CHECK        = new ConfigBoolean("lightLevelSkipBlockCheck", false).apply(GENERIC_KEY);
+        public static final ConfigBoolean       LIGHT_LEVEL_SLIME_MODE              = new ConfigBoolean("lightLevelSlimeMode", false).apply(GENERIC_KEY);
         public static final ConfigBoolean       LIGHT_LEVEL_SPAWN_SPHERE_FULL       = new ConfigBoolean("lightLevelSpawnSphereFull", false).apply(GENERIC_KEY);
         public static final ConfigBoolean       LIGHT_LEVEL_SPAWN_SPHERE_LIMIT      = new ConfigBoolean("lightLevelSpawnSphereLimit", false).apply(GENERIC_KEY);
         public static final ConfigInteger       LIGHT_LEVEL_THRESHOLD_DIM           = new ConfigInteger("lightLevelThresholdDim", 0, 0, 15).apply(GENERIC_KEY);
@@ -204,6 +205,7 @@ public class Configs implements IConfigHandler
                 LIGHT_LEVEL_NUMBER_ROTATION,
                 LIGHT_LEVEL_RENDER_THROUGH,
                 LIGHT_LEVEL_SKIP_BLOCK_CHECK,
+                LIGHT_LEVEL_SLIME_MODE,
                 LIGHT_LEVEL_SPAWN_SPHERE_FULL,
                 LIGHT_LEVEL_SPAWN_SPHERE_LIMIT,
                 LIGHT_LEVEL_UNDER_WATER,

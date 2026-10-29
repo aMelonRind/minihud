@@ -1,9 +1,11 @@
 package fi.dy.masa.minihud.util;
 
+import fi.dy.masa.malilib.util.position.Vec3d;
 import fi.dy.masa.minihud.MiniHUD;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntImmutableList;
 import it.unimi.dsi.fastutil.ints.IntList;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.shorts.ShortArrayList;
 import it.unimi.dsi.fastutil.shorts.ShortImmutableList;
 import it.unimi.dsi.fastutil.shorts.ShortList;
@@ -37,11 +39,15 @@ public class LightLevelChunkInfo
      * <p>
      * To skip 40000 blocks, just do <code>{ 32767, 0, 40000 - 32767, ... }</code>.
      */
-    private ShortList clusters = new ShortArrayList(128);
+    private ShortList clusters = new ShortArrayList(512);
     /**
      * Packed integers: block, sky, y.
      */
-    private IntList infos = new IntArrayList(1024);
+    private IntList infos = new IntArrayList(512);
+    /**
+     * For vertex buffer allocation purpose
+     */
+    private final short[] blockLightCounts = new short[16];
 
     private boolean sealed;
     public final int x, z;
@@ -62,10 +68,23 @@ public class LightLevelChunkInfo
         to.y = y + (info & HEIGHT_MASK) / (float) HEIGHT_RESOLUTION;
     }
 
-    private static boolean checkCondition(int info, Predicate<Integer> condition)
+    private static boolean checkCondition(int info, int blockLightMask)
     {
         int block = info >>> (LIGHT_LEVEL_BITS + HEIGHT_BITS);
-        return condition.test(block);
+        return (blockLightMask & (1 << block)) == 0;
+    }
+
+    private static int generateBlockLightMask(Predicate<Integer> condition)
+    {
+        int mask = 0;
+        for (int i = 0; i < 16; i++)
+        {
+            if (condition.test(i))
+            {
+                mask |= 1 << i;
+            }
+        }
+        return ~mask;
     }
 
     public LightLevelChunkInfo(int chunkX, int chunkZ, int worldMinY)
@@ -194,7 +213,18 @@ public class LightLevelChunkInfo
 
         this.clusters = new ShortImmutableList(this.clusters);
         this.infos = new IntImmutableList(this.infos);
+
+        int[] blockLights = new int[16];
+        for (int info : this.infos)
+        {
+            blockLights[info >>> (LIGHT_LEVEL_BITS + HEIGHT_BITS)]++;
+        }
+        for (int i = 0; i < 16; i++)
+        {
+            this.blockLightCounts[i] = (short) Math.min(blockLights[i], Short.MAX_VALUE);
+        }
         sealed = true;
+//        System.out.printf("clusters: %d, infos: %d\n", this.clusters.size(), this.infos.size());
     }
 
     public int size()
@@ -207,7 +237,7 @@ public class LightLevelChunkInfo
         return this.infos.isEmpty();
     }
 
-    public Iterable<LightLevelInfo> iterable(int minY, Predicate<Integer> condition)
+    public Iterable<LightLevelInfo> iterable(int minY, int xzMask, Predicate<Integer> condition)
     {
         if (this.sealed == false)
         {
@@ -219,7 +249,7 @@ public class LightLevelChunkInfo
             @Override
             public @NonNull Iterator<LightLevelInfo> iterator()
             {
-                return new InfoIterator(minY, condition);
+                return new InfoIterator(minY, xzMask, condition);
             }
         };
     }
@@ -239,14 +269,16 @@ public class LightLevelChunkInfo
         // max index determined by condition.
         private int infoMaxIndex = -1;
         // filters block light level
-        private final Predicate<Integer> condition;
+        private final int blockLightMask;
+        private final int xzMask;
         private final LightLevelInfo mutable = new LightLevelInfo();
 
-        private InfoIterator(int minY, Predicate<Integer> condition)
+        private InfoIterator(int minY, int xzMask, Predicate<Integer> condition)
         {
-            this.condition = condition;
+            this.blockLightMask = LightLevelChunkInfo.generateBlockLightMask(condition);
+            this.xzMask = xzMask;
 
-            if (LightLevelChunkInfo.this.isEmpty())
+            if (LightLevelChunkInfo.this.isEmpty() || xzMask == -1)
             {
                 return;
             }
@@ -254,7 +286,7 @@ public class LightLevelChunkInfo
             // find the last info index
             final IntList infos = LightLevelChunkInfo.this.infos;
             this.infoMaxIndex = infos.size() - 1;
-            while (LightLevelChunkInfo.checkCondition(infos.getInt(this.infoMaxIndex), condition) == false)
+            while (LightLevelChunkInfo.checkCondition(infos.getInt(this.infoMaxIndex), this.blockLightMask) == false)
             {
                 this.infoMaxIndex--;
                 if (this.infoMaxIndex < 0)
@@ -305,7 +337,7 @@ public class LightLevelChunkInfo
                 // skip infos that doesn't meet condition
                 while (this.clusterIndex2 < this.clusterSize)
                 {
-                    if (LightLevelChunkInfo.checkCondition(infos.getInt(this.infoIndex), this.condition))
+                    if (LightLevelChunkInfo.checkCondition(infos.getInt(this.infoIndex), this.blockLightMask) && this.checkXZ())
                     {
                         // found next valid info
                         return;
@@ -354,6 +386,95 @@ public class LightLevelChunkInfo
             this.skip();
 
             return this.mutable;
+        }
+
+        private boolean checkXZ()
+        {
+            return this.xzMask == 0 || LightLevelPosLimiter.checkXZ(this.xzMask, this.mainIndex & 15, (this.mainIndex >>> 4) & 15);
+        }
+    }
+
+    // eliminates ChunkPos instantiation
+    public static class Map extends Long2ObjectOpenHashMap<LightLevelChunkInfo>
+    {
+        private static final long MASK32 = ((1L << 32L) - 1L);
+
+        public void put(int chunkX, int chunkZ, LightLevelChunkInfo info)
+        {
+            long key = ((long) chunkX << 32L) | ((long) chunkZ & MASK32);
+            super.put(key, info);
+        }
+
+        public boolean contains(int chunkX, int chunkZ)
+        {
+            long key = ((long) chunkX << 32L) | ((long) chunkZ & MASK32);
+            return super.containsKey(key);
+        }
+
+        public void removeNeighbors(int chunkX, int chunkZ)
+        {
+            long keyLeft = (long) chunkX << 32L;
+            long key0 = keyLeft | ((long) (chunkZ - 1) & MASK32);
+            long key1 = keyLeft | ((long) (chunkZ    ) & MASK32);
+            long key2 = keyLeft | ((long) (chunkZ + 1) & MASK32);
+            super.remove(key0);
+            super.remove(key1);
+            super.remove(key2);
+            super.remove(key0 - (1L << 32L));
+            super.remove(key1 - (1L << 32L));
+            super.remove(key2 - (1L << 32L));
+            super.remove(key0 + (1L << 32L));
+            super.remove(key1 + (1L << 32L));
+            super.remove(key2 + (1L << 32L));
+        }
+
+        public int countAllMarks(Predicate<Integer> blockLightCondition)
+        {
+            final int mask = LightLevelChunkInfo.generateBlockLightMask(blockLightCondition);
+            int total = 0;
+            for (LightLevelChunkInfo info : this.values())
+            {
+                for (int i = 0; i < 16; i++)
+                {
+                    if ((mask & (1 << i)) == 0)
+                    {
+                        total += info.blockLightCounts[i];
+                    }
+                }
+            }
+            return total;
+        }
+
+        // Doesn't have to be exact.
+        public int countMarks(Vec3d camera, int range, Predicate<Integer> blockLightCondition)
+        {
+            final int mask = LightLevelChunkInfo.generateBlockLightMask(blockLightCondition);
+            int total = 0;
+            int minCX = (int) Math.floor(camera.x - range) >> 4;
+            int minCZ = (int) Math.floor(camera.z - range) >> 4;
+            int maxCX = (int) Math.floor(camera.x + range) >> 4;
+            int maxCZ = (int) Math.floor(camera.z + range) >> 4;
+            for (Entry<LightLevelChunkInfo> info : this.long2ObjectEntrySet())
+            {
+                long key = info.getLongKey();
+                int cx = (int) (key >> 32L);
+                int cz = (int) key;
+                if (cx < minCX || cx > maxCX || cz < minCZ || cz > maxCZ)
+                {
+                    continue;
+                }
+
+                short[] blc = info.getValue().blockLightCounts;
+                for (int i = 0; i < 16; i++)
+                {
+                    if ((mask & (1 << i)) == 0)
+                    {
+                        total += blc[i];
+                    }
+                }
+            }
+
+            return range <= 64 ? Math.min(total, range * range * range) : total;
         }
     }
 }
