@@ -2,13 +2,6 @@ package fi.dy.masa.minihud.renderer;
 
 import java.util.*;
 import java.util.function.Predicate;
-
-import fi.dy.masa.minihud.mixin.render.IMixinByteBufferBuilder;
-import fi.dy.masa.minihud.mixin.render.IMixinRenderObjectVbo;
-import fi.dy.masa.minihud.util.*;
-import fi.dy.masa.minihud.renderer.shapes.ShapeManager;
-import fi.dy.masa.minihud.renderer.shapes.ShapeSpawnSphere;
-import net.minecraft.world.level.*;
 import org.joml.Matrix4f;
 
 import com.mojang.blaze3d.vertex.BufferBuilder;
@@ -24,6 +17,7 @@ import net.minecraft.util.profiling.ProfilerFiller;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EntityTypes;
+import net.minecraft.world.level.*;
 import net.minecraft.world.level.block.LiquidBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
@@ -44,6 +38,11 @@ import fi.dy.masa.minihud.MiniHUD;
 import fi.dy.masa.minihud.Reference;
 import fi.dy.masa.minihud.config.Configs;
 import fi.dy.masa.minihud.config.RendererToggle;
+import fi.dy.masa.minihud.mixin.render.IMixinByteBufferBuilder;
+import fi.dy.masa.minihud.mixin.render.IMixinRenderObjectVbo;
+import fi.dy.masa.minihud.renderer.shapes.ShapeManager;
+import fi.dy.masa.minihud.renderer.shapes.ShapeSpawnSphere;
+import fi.dy.masa.minihud.util.*;
 
 public class OverlayRendererLightLevel extends OverlayRendererBase
 {

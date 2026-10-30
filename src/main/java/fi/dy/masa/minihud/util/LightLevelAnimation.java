@@ -1,10 +1,10 @@
 package fi.dy.masa.minihud.util;
 
+import java.util.Arrays;
+
 import fi.dy.masa.malilib.config.IConfigOptionListEntry;
 import fi.dy.masa.malilib.util.StringUtils;
 import fi.dy.masa.malilib.util.data.Color4f;
-
-import java.util.Arrays;
 
 public enum LightLevelAnimation implements IConfigOptionListEntry
 {

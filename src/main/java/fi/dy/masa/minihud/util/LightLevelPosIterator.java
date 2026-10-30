@@ -1,8 +1,7 @@
 package fi.dy.masa.minihud.util;
 
-import fi.dy.masa.malilib.util.WorldUtils;
-import fi.dy.masa.minihud.mixin.world.IMixinPalettedContainer;
-import fi.dy.masa.minihud.util.LightLevelScanComponentBase.*;
+import java.util.Arrays;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -11,7 +10,9 @@ import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.chunk.Palette;
 import net.minecraft.world.level.chunk.PalettedContainer;
 
-import java.util.Arrays;
+import fi.dy.masa.malilib.util.WorldUtils;
+import fi.dy.masa.minihud.mixin.world.IMixinPalettedContainer;
+import fi.dy.masa.minihud.util.LightLevelScanComponentBase.*;
 
 public abstract class LightLevelPosIterator
 {

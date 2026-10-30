@@ -1,12 +1,13 @@
 package fi.dy.masa.minihud.util;
 
+import javax.annotation.Nullable;
+import java.util.ArrayList;
+
+import net.minecraft.world.level.Level;
+
 import fi.dy.masa.minihud.data.HudDataManager;
 import fi.dy.masa.minihud.renderer.shapes.ShapeSpawnSphere;
 import fi.dy.masa.minihud.util.LightLevelScanComponentBase.*;
-import net.minecraft.world.level.Level;
-
-import javax.annotation.Nullable;
-import java.util.ArrayList;
 
 // Invocation order: testChunk, getMinY, getMaxY, testFullLayer*, xzMask, testBlock.
 // Latter can ignore conditions that previous filters already ruled out, except testFullLayer.

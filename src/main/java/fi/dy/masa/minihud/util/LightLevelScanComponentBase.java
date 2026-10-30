@@ -1,9 +1,9 @@
 package fi.dy.masa.minihud.util;
 
+import javax.annotation.Nullable;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.state.BlockState;
-
-import javax.annotation.Nullable;
 
 public abstract class LightLevelScanComponentBase
 {

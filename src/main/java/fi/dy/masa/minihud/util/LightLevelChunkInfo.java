@@ -1,7 +1,7 @@
 package fi.dy.masa.minihud.util;
 
-import fi.dy.masa.malilib.util.position.Vec3d;
-import fi.dy.masa.minihud.MiniHUD;
+import java.util.Iterator;
+import java.util.function.Predicate;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntImmutableList;
 import it.unimi.dsi.fastutil.ints.IntList;
@@ -11,8 +11,8 @@ import it.unimi.dsi.fastutil.shorts.ShortImmutableList;
 import it.unimi.dsi.fastutil.shorts.ShortList;
 import org.jspecify.annotations.NonNull;
 
-import java.util.Iterator;
-import java.util.function.Predicate;
+import fi.dy.masa.malilib.util.position.Vec3d;
+import fi.dy.masa.minihud.MiniHUD;
 
 /**
  * Stores light level info in yzx order.
